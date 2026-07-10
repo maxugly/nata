@@ -1,0 +1,2 @@
+# Udev rules for NATA control device
+KERNEL=="nata_ctl", MODE="0660", GROUP="netdev"
