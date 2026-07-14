@@ -114,7 +114,7 @@ int sim_rx_one_packet(struct nata_priv *priv, int is_dev0)
         return 0; /* No new packet */
     }
 
-    if (hdr.len > ETH_FRAME_LEN || hdr.len == 0) {
+    if (hdr.len > ETH_FRAME_LEN || hdr.len < ETH_HLEN) {
         priv->dropped_blocks++;
         kfree(buf);
         return -EINVAL;
