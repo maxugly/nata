@@ -54,6 +54,9 @@ module nata_tb;
 
     // Test sequence
     initial begin
+        $dumpfile("nata_tb.vcd");
+        $dumpvars(0, nata_tb);
+
         // Initialize inputs
         sys_rst = 1'b1;
         sata_a_rx_p = 1'b0;
@@ -72,22 +75,23 @@ module nata_tb;
             $display("[TB] SUCCESS: Both SATA link PHYs report locked and aligned.");
         end else begin
             $display("[TB] ERROR: Link PLL failed to lock.");
+            $finish;
         end
 
-        // Simulate host A sending packet (SCSI WRITE to LBA 0)
+        // Simulate host A write event (structural AN wire path)
         $display("[TB] Simulating Host A write to LBA 0...");
-        // Force state write event to emulate SATA controller write processing
+        // Force write_event while checking: release would clear the pulse before assert
         force uut.write_event_a_to_b = 1'b1;
         #10;
-        release uut.write_event_a_to_b;
-
-        #50;
         $display("[TB] Verifying peer interrupt (Asynchronous Notification) propagation...");
         if (led_activity_a) begin
             $display("[TB] SUCCESS: Peer interrupt propagated successfully to Port B.");
         end else begin
             $display("[TB] ERROR: Interrupt signal was not routed.");
+            release uut.write_event_a_to_b;
+            $finish;
         end
+        release uut.write_event_a_to_b;
 
         #100;
         $display("[TB] Simulation completed successfully.");

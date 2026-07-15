@@ -46,7 +46,7 @@ Normative software mailbox geometry is owned by the kernel + `docs/specs/03`; RT
 
 - [ ] Spec 07 reflects new ports, states, or BRAM geometry
 - [ ] Mailbox depth/width still matches software 128 KiB / 512 B sectors
-- [ ] Run or extend `sim/` smoke when link/AN wiring changes
+- [ ] Run structural smoke after RTL/TB changes: `make -C firmware/sim` (see `sim/AGENTS.md`)
 - [ ] No README language claiming hardware bring-up complete
 
 ---

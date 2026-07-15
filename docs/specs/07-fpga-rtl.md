@@ -220,10 +220,31 @@ GTP placement LOC constraints:
 | Timescale | 1ns / 1ps |
 | Clock | 200 MHz differential (2.5 ns half-period) |
 | Stimulus | Assert reset 20 ns; release; check both link LEDs high |
-| AN path | `force uut.write_event_a_to_b = 1`; check `led_activity_a` |
+| AN path | `force uut.write_event_a_to_b = 1`; check `led_activity_a` **while force held** |
+| VCD | `$dumpfile("nata_tb.vcd")` / `$dumpvars(0, nata_tb)` |
+| Sim stubs | `firmware/sim/xilinx_sim_stubs.v` provides behavioral `IBUFDS` |
 | Pass criteria | Print SUCCESS messages; `$finish` |
 
 Does **not** drive full SATA OOB or FIS byte streams.
+
+### 7.1 Running the simulation
+
+**Tool:** Icarus Verilog (`iverilog` + `vvp`). From `firmware/sim/`:
+
+```bash
+make
+# equivalent:
+iverilog -o nata_tb.vvp -g2012 \
+  nata_tb.v xilinx_sim_stubs.v \
+  ../rtl/nata_top.v ../rtl/sata_device_ip.v ../rtl/dual_port_ram.v
+vvp nata_tb.vvp
+```
+
+**What this validates (as-built):** the RTL hierarchy elaborates; forced `phy_ready` lights both link LEDs; forced `write_event_a_to_b` drives `led_activity_a` (structural AN/activity wiring). Optional waves: `gtkwave nata_tb.vcd`.
+
+**What this does not validate:** full FIS packet streams, DATA FIS DMA, OOB/COMRESET, real SERDES, multi-sector mailbox transfers, or host-side Asynchronous Notification compliance. Those need a separate future testbench.
+
+Do not commit `*.vvp` / `*.vcd` (gitignored).
 
 ---
 
@@ -241,6 +262,7 @@ Does **not** drive full SATA OOB or FIS byte streams.
 
 ## 9. Gaps to production (checklist)
 
+- [x] Basic structural simulation passing (iverilog)  
 - [ ] Real GTP/GTX + OOB analog timing  
 - [ ] Full link layer retries, credit, ALIGN insertion  
 - [ ] Complete FIS data payload streaming for multi-sector  
@@ -249,6 +271,7 @@ Does **not** drive full SATA OOB or FIS byte streams.
 - [ ] SATA Asynchronous Notification per AHCI host expectations  
 - [ ] CDC if ports use independent recovered clocks  
 - [ ] Formal / compliance testing against analyzer  
+- [ ] Protocol-level FIS testbench (beyond structural force/LED smoke)  
 
 ---
 
