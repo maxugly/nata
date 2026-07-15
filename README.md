@@ -55,6 +55,8 @@ Each packet is prefixed with a small NATA header (`magic`, `len`, `seq`) and pad
 
 Further electrical and protocol rationale: [docs/whitepaper.md](docs/whitepaper.md).
 
+**As-built specifications** (packet format, mailbox map, kernel module, control plane, netns sim, FPGA RTL stubs, measured performance): [docs/specs/](docs/specs/README.md).
+
 ---
 
 ## Properties
@@ -77,7 +79,7 @@ firmware/rtl/     Verilog sources (dual-port RAM, device IP, top)
 firmware/sim/     Testbench
 firmware/constraints/  FPGA pin constraints (Artix-7 example)
 hardware/         KiCad schematic and PCB for the bridge
-docs/             Whitepaper
+docs/             Whitepaper + as-built specs (docs/specs/)
 ```
 
 ---
@@ -267,6 +269,7 @@ Treat it as experimental. Simulation mode never touches real disks. Hardware mod
 2. Keep hot-path bounds checks and sequence consumption intact (invalid frames must not busy-loop RX threads).
 3. Do not commit Kbuild products (`*.o`, `*.ko`, `*.cmd`, `Module.symvers`, etc.); see `.gitignore`.
 4. Document hardware or RTL changes alongside software when the mailbox layout or header format shifts.
+5. Follow the agent/human work contract in [AGENTS.md](AGENTS.md) (DOX): as-built specs, named gaps, no oversell.
 
 ---
 
