@@ -32,6 +32,9 @@ static int nata_poll(struct napi_struct *napi, int budget)
 		struct sk_buff *skb = NULL;
 		int ret;
 
+		if (!check_rx_pending(priv, is_dev0))
+			break;
+
 		spin_lock(&priv->lock);
 		ret = sim_rx_dequeue(priv, is_dev0, &skb);
 		if (ret != 0)
