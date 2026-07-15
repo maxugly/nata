@@ -113,12 +113,12 @@ struct nata_ioc_status {
 | `tx_lba_start` | `priv->tx_lba_0` (128) |
 | `rx_lba_start` | `priv->rx_lba_0` (0) |
 | `tx_packets` … `rx_bytes` | nata0 counters |
-| `dropped_blocks` | shared drop counter (includes ring-full) |
+| `dropped_blocks` | shared drop counter (invalid frames / OOM; not TX busy) |
 | `interrupt_counts` | `tx_packets_0 + tx_packets_1` |
 | `sim_*_0` / `sim_*_1` | per-NIC packet counts |
 | `ring_head_0` / `ring_tail_0` | upper half ring indices |
 | `ring_head_1` / `ring_tail_1` | lower half ring indices |
-| `ring_full_drops` | TX drops when ring full |
+| `ring_full_drops` | TX saw full ring → `NETDEV_TX_BUSY` (telemetry, not a drop) |
 
 `copy_to_user` failure → `-EFAULT`.
 

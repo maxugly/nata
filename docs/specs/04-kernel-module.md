@@ -1,6 +1,6 @@
 # 04 — Kernel Module Specification
 
-**Spec version:** 0.3 (as-built)  
+**Spec version:** 0.4 (as-built)  
 **Status:** IMPLEMENTED (simulation datapath)  
 **Sources:** `module/nata_main.c`, `module/nata_net.c`, `module/nata_blk.c`, `module/nata.h`, `module/Makefile`
 
@@ -53,7 +53,7 @@ One module instance supports **exactly one** dual-NIC simulation (one mailbox, t
 | Sync | `lock` (spinlock) |
 | Mailbox | `sim_mailbox`, `tx_lba_0/1`, `rx_lba_0/1` |
 | RX NAPI | `napi0`, `napi1` (per netdev; no kthreads) |
-| Ring | `tx_head_0/1`, `tx_tail_0/1` (8 slots/dir) |
+| Ring | `tx_head_0/1`, `tx_tail_0/1` (32 slots/dir) |
 | Observability seq | `tx_seq_0/1` (written into header only) |
 | Stats | `tx_packets/bytes_*`, `rx_packets/bytes_*`, `dropped_blocks`, `ring_full_drops` |
 
@@ -118,22 +118,31 @@ No `ndo_get_stats64` override — uses core `dev->stats` updated on TX/RX. No et
 ```text
 if !priv || !sim_mailbox → kfree_skb, NETDEV_TX_OK
 spin_lock_bh
-  sim_tx_packet(priv, skb, is_dev0=1)   // note: flag 1 means nata0
+  ret = sim_tx_packet(priv, skb, is_dev0=1)   // note: flag 1 means nata0
+  if -ENOSPC:
+    ring_full_drops++; netif_stop_queue(dev)
+    unlock; napi_schedule(peer); return NETDEV_TX_BUSY  // skb kept by stack
   on success: update dev->stats + priv tx_*_0
-  on fail: dev->stats.tx_errors++
+              if check_tx_full → netif_stop_queue(dev)   // proactive
+  on other fail: dev->stats.tx_errors++
 spin_unlock_bh
-if success: napi_schedule(&priv->napi1)   // peer softirq drain
-dev_consume_skb_any(skb)
+if success: napi_schedule(&priv->napi1); dev_consume_skb_any(skb)
+else: dev_kfree_skb_any(skb)   // invalid frame only
 return NETDEV_TX_OK
 ```
 
 #### `nata_xmit_1` (nata1)
 
-Symmetric: `sim_tx_packet(..., is_dev0=0)`, `napi_schedule(&priv->napi0)`, stats `_*_1`.
+Symmetric via shared `nata_xmit(..., is_dev0=0)`.
 
 #### Backpressure policy
 
-Always returns **`NETDEV_TX_OK`** and consumes the skb. Ring full (`sim_tx_packet` → `-ENOSPC`) increments `tx_errors`, `dropped_blocks`, and `ring_full_drops` — still no `NETDEV_TX_BUSY` / queue stop.
+| Condition | Behavior |
+|-----------|----------|
+| Ring full (`-ENOSPC`) | `NETDEV_TX_BUSY`, `netif_stop_queue`, skb **not** freed, `ring_full_drops++` |
+| Last free slot just filled | Proactive `netif_stop_queue` after successful enqueue |
+| Slot freed in NAPI | `netif_wake_queue` on the **producer** netdev if stopped |
+| Invalid frame | Free skb, `NETDEV_TX_OK`, `tx_errors++` |
 
 ### 5.4 `is_dev0` convention (critical)
 
@@ -148,7 +157,7 @@ Naming is historical; treat as “operating on nata0 when nonzero”.
 
 ### 5.5 Ring TX (`sim_tx_packet`)
 
-Enqueue at `head` of the peer-facing half. If `valid==1` at head, ring is full — drop, no overwrite. Else write payload+header, `smp_wmb()`, set `valid=1`, advance head. See [02](02-packet-format.md) and [03](03-mailbox-memory-map.md).
+Enqueue at `head` of the peer-facing half. If `valid==1` at head, ring is full — return `-ENOSPC` (no overwrite). Else write payload+header, `smp_wmb()`, set `valid=1`, advance head. See [02](02-packet-format.md) and [03](03-mailbox-memory-map.md).
 
 ---
 
@@ -167,6 +176,7 @@ Shared poll (`nata_poll`):
 while work < budget:
   spin_lock
     ret = sim_rx_dequeue(...)   // may clear valid + advance tail
+    if ret != 0: netif_wake_queue(producer) if stopped
   spin_unlock
   if empty → break
   if error → continue
@@ -176,7 +186,7 @@ if work < budget:
   if check_rx_pending → napi_schedule   // race after empty
 ```
 
-**Lock scope:** only ring dequeue under `priv->lock`. Stack inject runs **outside** the lock so TX can keep filling slots.
+**Lock scope:** only ring dequeue under `priv->lock`. Stack inject runs **outside** the lock so TX can keep filling slots. Producer wake runs under the lock after a freed slot.
 
 ### 6.2 Pending check (`check_rx_pending`)
 
@@ -215,7 +225,7 @@ return nata_slot_read_valid(slot_at_tail) == 1
 |----------|------|
 | `sim_mailbox_io` | Generic sector R/W with bounds (available; hot path uses direct memcpy) |
 | `check_rx_pending` | NAPI reschedule predicate (`valid` at tail) |
-| `sim_tx_packet` | Ring enqueue at head; drop if full |
+| `sim_tx_packet` | Ring enqueue at head; `-ENOSPC` if full (xmit → BUSY) |
 | `sim_rx_dequeue` | Ring dequeue at tail into skb; no stack inject |
 
 See [02-packet-format.md](02-packet-format.md) for field-level rules.
@@ -229,16 +239,16 @@ See [02-packet-format.md](02-packet-format.md) for field-level rules.
 | Counter | Increment condition |
 |---------|---------------------|
 | `tx_packets_0/1`, `tx_bytes_0/1` | Successful `sim_tx_packet` |
-| `ring_full_drops` | TX saw full ring (`-ENOSPC`) |
+| `ring_full_drops` | TX saw full ring (`-ENOSPC` → `NETDEV_TX_BUSY`; not a packet drop) |
 | `rx_packets_0/1`, `rx_bytes_0/1` | Successful `sim_rx_dequeue` (before GRO inject) |
-| `dropped_blocks` | Bad len, sector overflow, skb alloc fail, ring-full TX |
+| `dropped_blocks` | Bad len, sector overflow, skb alloc fail (not TX busy) |
 
 ### 8.2 `net_device->stats`
 
 | Field | Update |
 |-------|--------|
 | `tx_packets`, `tx_bytes` | On successful TX |
-| `tx_errors` | On `sim_tx_packet` failure |
+| `tx_errors` | On `sim_tx_packet` failure other than `-ENOSPC` |
 | `rx_packets`, `rx_bytes` | On successful RX inject |
 
 Not updated: `rx_errors`, `rx_dropped` on netdev (drops go to `dropped_blocks` only).
@@ -335,12 +345,14 @@ sudo udevadm control --reload
 User/app
   → IP stack
     → dev_queue_xmit(nata0)
-      → nata_xmit_0
+      → nata_xmit_0 / nata_xmit
         → sim_tx_packet (enqueue upper ring slot)
-        → napi_schedule(napi1)
+        → if full: NETDEV_TX_BUSY + stop_queue
+        → else: napi_schedule(napi1); consume skb
 
 softirq / nata_poll (napi1)
   → while budget: sim_rx_dequeue under short lock
+  → wake nata0 TX queue if stopped
   → napi_gro_receive
       → IP stack peer
 ```

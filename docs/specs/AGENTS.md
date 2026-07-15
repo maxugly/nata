@@ -70,8 +70,8 @@ These values must match across docs and code. Change them only with a coordinate
 | Header size | 16 bytes |
 | Magic | `0x4E415441` (`NATA`) |
 | RX len window | `ETH_HLEN` … `ETH_FRAME_LEN` |
-| Queue depth | **8 slots per direction** (drop when full; no overwrite) |
-| Slot size | 16 sectors / 8192 bytes (`valid` + header + payload) |
+| Queue depth | **32 slots per direction** (BUSY + stop-queue when full; no overwrite) |
+| Slot size | 4 sectors / 2048 bytes (`valid` + header + payload) |
 
 If you edit one of these in code, update **02, 03, 04, 07** (as applicable), **README.md** (repo root), and **01** maturity notes in the same task.
 

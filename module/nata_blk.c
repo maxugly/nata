@@ -6,7 +6,6 @@
 #include "nata.h"
 
 /* 128 KB simulated dual-port mailbox = 256 sectors of 512 bytes */
-#define NATA_MAILBOX_BYTES	131072
 #define NATA_MAILBOX_SECTORS	(NATA_MAILBOX_BYTES / 512)
 
 /* Max usable payload in a slot after valid + header */
@@ -14,7 +13,7 @@
 
 /*
  * Byte offset of slot index within a half starting at base_lba.
- * base_lba is 0 (lower) or 128 (upper); slot is 0..7.
+ * base_lba is 0 (lower) or 128 (upper); slot is 0 .. NATA_RING_SLOTS-1.
  */
 static inline u64 nata_slot_byte_offset(u64 base_lba, u32 slot)
 {
@@ -91,8 +90,34 @@ int check_rx_pending(struct nata_priv *priv, int is_dev0)
 }
 
 /*
+ * True if the TX ring for this netdev cannot accept another frame
+ * (slot at head still published). Caller should hold priv->lock for a
+ * stable decision with enqueue/stop-queue.
+ */
+int check_tx_full(struct nata_priv *priv, int is_dev0)
+{
+	u64 base_lba;
+	u32 head;
+	u8 *slot;
+
+	if (!priv->sim_mailbox)
+		return 1;
+
+	if (is_dev0) {
+		base_lba = priv->tx_lba_0;
+		head = priv->tx_head_0;
+	} else {
+		base_lba = priv->tx_lba_1;
+		head = priv->tx_head_1;
+	}
+
+	slot = nata_slot_ptr(priv, base_lba, head);
+	return nata_slot_read_valid(slot) == 1;
+}
+
+/*
  * Enqueue one frame into the peer-facing ring (producer).
- * Full ring: no overwrite — drop, count, return -ENOSPC.
+ * Full ring: no overwrite — return -ENOSPC (caller applies NETDEV_TX_BUSY).
  *
  * Order: payload + header, smp_wmb(), then valid=1; advance head.
  * Caller must hold priv->lock.
@@ -124,11 +149,8 @@ int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0)
 	slot = nata_slot_ptr(priv, base_lba, h);
 
 	/* Full: head slot still published (consumer has not cleared it) */
-	if (nata_slot_read_valid(slot) == 1) {
-		priv->dropped_blocks++;
-		priv->ring_full_drops++;
+	if (nata_slot_read_valid(slot) == 1)
 		return -ENOSPC;
-	}
 
 	max_payload = NATA_SLOT_MAX_PAYLOAD;
 	if (skb->len < ETH_HLEN || skb->len > ETH_FRAME_LEN ||

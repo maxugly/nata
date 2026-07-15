@@ -1,6 +1,6 @@
 # 02 — Packet Format Specification
 
-**Spec version:** 0.2 (as-built)  
+**Spec version:** 0.3 (as-built)  
 **Status:** IMPLEMENTED  
 **Normative code:** `module/nata.h`, `module/nata_blk.c`
 
@@ -22,14 +22,14 @@ On-mailbox representation of one Ethernet frame **inside one ring slot**. Same g
 | Valid flag size | 4 bytes | `u32` at slot start |
 | Min `hdr.len` | `ETH_HLEN` (14) | |
 | Max `hdr.len` | `ETH_FRAME_LEN` (1514) | |
-| Slot size | 8192 bytes (16 sectors) | Holds valid + header + max frame easily |
-| Ring slots | 8 per direction | See [03-mailbox-memory-map.md](03-mailbox-memory-map.md) |
+| Slot size | 2048 bytes (4 sectors) | Max payload 2028 ≥ `ETH_FRAME_LEN` |
+| Ring slots | 32 per direction | See [03-mailbox-memory-map.md](03-mailbox-memory-map.md) |
 
 ---
 
 ## 3. Slot layout (canonical)
 
-Each ring slot is 8192 bytes. **Valid flag is at byte 0; header (and thus magic) starts at byte 4.**
+Each ring slot is 2048 bytes. **Valid flag is at byte 0; header (and thus magic) starts at byte 4.**
 
 ```text
 Slot offset  Size  Field
@@ -73,12 +73,12 @@ struct nata_pkt_hdr {
 ### 4.1 Transmitter (producer)
 
 ```text
-1. If slot[head].valid == 1 → ring full: drop, ring_full_drops++, return -ENOSPC
+1. If slot[head].valid == 1 → ring full: return -ENOSPC (xmit → NETDEV_TX_BUSY)
 2. valid = 0 (clear)
 3. Write payload at offset 20, header at offset 4
 4. smp_wmb()
 5. valid = 1
-6. head = (head + 1) & 7
+6. head = (head + 1) & 31
 ```
 
 ### 4.2 Receiver (consumer)
@@ -87,7 +87,7 @@ struct nata_pkt_hdr {
 1. If slot[tail].valid != 1 → empty
 2. smp_rmb()
 3. Read header + payload; validate
-4. valid = 0; tail = (tail + 1) & 7   // always after observing valid (before inject)
+4. valid = 0; tail = (tail + 1) & 31   // always after observing valid (before inject)
 5. Caller injects via NAPI (napi_gro_receive) outside the ring lock
 ```
 

@@ -108,7 +108,7 @@ static int __init nata_init(void)
 	spin_lock_init(&global_priv->lock);
 
 	/*
-	 * Mailbox LBA bases (8-slot ring starts at each half base):
+	 * Mailbox LBA bases (32-slot ring starts at each half base):
 	 * nata0 TX ring: upper 64KB LBA 128; nata0 RX: lower 64KB LBA 0
 	 * nata1 TX ring: lower 64KB LBA 0;   nata1 RX: upper 64KB LBA 128
 	 */
@@ -123,13 +123,13 @@ static int __init nata_init(void)
 	global_priv->tx_head_1 = 0;
 	global_priv->tx_tail_1 = 0;
 
-	/* Allocate persistent memory for simulated BRAM mailbox (128 KB via vmalloc) */
-	global_priv->sim_mailbox = vmalloc(131072);
+	/* Simulated dual-port BRAM mailbox (128 KiB; geometry locked in nata.h) */
+	global_priv->sim_mailbox = vmalloc(NATA_MAILBOX_BYTES);
 	if (!global_priv->sim_mailbox) {
 		kfree(global_priv);
 		return -ENOMEM;
 	}
-	memset(global_priv->sim_mailbox, 0, 131072);
+	memset(global_priv->sim_mailbox, 0, NATA_MAILBOX_BYTES);
 
 	ret = misc_register(&nata_miscdev);
 	if (ret) {

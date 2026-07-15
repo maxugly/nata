@@ -89,7 +89,7 @@ NATA does **not** implement:
 | Side A | `nata0` | `nata-a` | `192.168.42.1/24` | LBA 128–255 (upper 64 KiB) | LBA 0–127 (lower 64 KiB) |
 | Side B | `nata1` | `nata-b` | `192.168.42.2/24` | LBA 0–127 (lower 64 KiB) | LBA 128–255 (upper 64 KiB) |
 
-**Invariant:** Side A’s TX region is Side B’s RX region and vice versa. Each direction is an **8-slot ring** (drop when full; no overwrite of published slots).
+**Invariant:** Side A’s TX region is Side B’s RX region and vice versa. Each direction is a **32-slot ring** (`NETDEV_TX_BUSY` when full; no overwrite of published slots).
 
 ---
 
@@ -123,8 +123,8 @@ NATA is **not** a TUN/TAP userspace tunnel. Encapsulation runs in the kernel `nd
 | RX NAPI poll + inject | Yes (`napi_gro_receive`) | TBD (AN → `napi_schedule`) |
 | ARP / ICMP / TCP / UDP | Yes (with netns) | TBD |
 | Sequence numbers | Yes | Same format intended |
-| Multi-packet ring queue | **Yes** (8 slots/dir in sim) | **No** on FPGA yet |
-| Flow control / backpressure | Minimal (always `NETDEV_TX_OK`) | TBD |
+| Multi-packet ring queue | **Yes** (32 slots/dir in sim) | **No** on FPGA yet |
+| Flow control / backpressure | **Yes** (`NETDEV_TX_BUSY` + stop/wake queue) | TBD |
 | IDENTIFY DEVICE (ATA) | N/A | Stub in RTL |
 | READ/WRITE DMA EXT | N/A | Stub state machine in RTL |
 | Asynchronous Notification | Software `napi_schedule` | Stub `T_SEND_AN` in RTL |
@@ -149,9 +149,9 @@ Module and userspace share `module/nata.h` for ioctl layouts; any ABI change to 
 
 ## 9. Non-goals and known limitations
 
-1. **Finite ring depth (8)** — under flood, TX drops with `ring_full_drops` instead of overwriting; still not infinite buffering or credit-based flow control.
+1. **Finite ring depth (32)** — under flood, TX returns `NETDEV_TX_BUSY` and stops the queue instead of overwriting; still not infinite buffering or credit-based flow control.
 2. **Same-host default netns** — assigning both IPs in one namespace fails ARP/IP locality checks; netns isolation is required for end-to-end IP tests.
-3. **TCP retransmits under extreme load** still occur (ring depth 8 underfills bursts); NAPI improved goodput vs kthreads but did not zero retransmits — see [08-performance.md](08-performance.md).
+3. **TCP retransmits under extreme load** may still occur; deeper rings + backpressure cut them vs depth-8 drop path — see [08-performance.md](08-performance.md).
 4. **No MTU customization** — standard Ethernet frame bounds enforced on RX (`ETH_HLEN` … `ETH_FRAME_LEN`); default netdev MTU from `alloc_etherdev`.
 5. **Hardware path is not production-ready** — RTL is architectural scaffolding, not a verified SATA device IP.
 

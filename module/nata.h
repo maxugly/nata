@@ -14,11 +14,17 @@ typedef uint64_t u64;
 
 #define NATA_MAGIC 0x4E415441  /* "NATA" in ASCII */
 
-/* Per-direction ring: 8 slots × 16 sectors × 512 B = 64 KiB (one mailbox half) */
-#define NATA_RING_SLOTS		8	/* power of 2 */
-#define NATA_SLOT_SECTORS	16	/* 8192 bytes per slot */
+/*
+ * Per-direction ring: 32 slots × 4 sectors × 512 B = 64 KiB (one mailbox half).
+ * Depth 32 absorbs TCP bursts better than the old 8×16 layout; slot still fits
+ * ETH_FRAME_LEN (1514) + valid + header (payload max 2028).
+ */
+#define NATA_RING_SLOTS		32	/* power of 2 */
+#define NATA_SLOT_SECTORS	4	/* 2048 bytes per slot */
 #define NATA_SLOT_BYTES		(NATA_SLOT_SECTORS * 512)
 #define NATA_RING_MASK		(NATA_RING_SLOTS - 1)
+#define NATA_MAILBOX_HALF_BYTES	(NATA_RING_SLOTS * NATA_SLOT_BYTES)	/* 65536 */
+#define NATA_MAILBOX_BYTES	(NATA_MAILBOX_HALF_BYTES * 2)		/* 131072 */
 
 struct nata_pkt_hdr {
 	u32 magic;
@@ -27,7 +33,7 @@ struct nata_pkt_hdr {
 	u32 reserved;
 };
 
-/* On-mailbox slot layout (within each 8192-byte slot) */
+/* On-mailbox slot layout (within each NATA_SLOT_BYTES slot) */
 #define NATA_SLOT_VALID_OFF	0	/* u32: 0 = empty, 1 = published */
 #define NATA_SLOT_HDR_OFF	4	/* struct nata_pkt_hdr */
 #define NATA_SLOT_PAYLOAD_OFF	(NATA_SLOT_HDR_OFF + (int)sizeof(struct nata_pkt_hdr))
@@ -82,8 +88,8 @@ struct nata_priv {
 	u64 rx_packets_1;
 	u64 rx_bytes_1;
 
-	u64 dropped_blocks;	/* invalid frames + ring-full TX drops + inject fails */
-	u64 ring_full_drops;	/* TX dropped because destination ring was full */
+	u64 dropped_blocks;	/* invalid frames + inject fails (not TX busy) */
+	u64 ring_full_drops;	/* TX saw full ring → NETDEV_TX_BUSY (not a drop) */
 };
 #endif /* __KERNEL__ */
 
@@ -130,6 +136,8 @@ struct nata_ioc_status {
 int nata_net_init(struct nata_priv *priv);
 int sim_mailbox_io(struct nata_priv *priv, u64 sector, void *buf, size_t len, int op);
 int check_rx_pending(struct nata_priv *priv, int is_dev0);
+/* True if producer head slot is still published (ring full). Caller holds lock. */
+int check_tx_full(struct nata_priv *priv, int is_dev0);
 int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0);
 /*
  * Dequeue one published slot into *skbp (caller injects via NAPI).

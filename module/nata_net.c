@@ -5,6 +5,18 @@
 #include "nata.h"
 
 /*
+ * Wake the producer netdev after freeing an RX slot.
+ * is_dev0: this NAPI is nata0 (drains nata1 TX) → wake nata1.
+ */
+static void nata_wake_tx_peer(struct nata_priv *priv, int is_dev0)
+{
+	struct net_device *txdev = is_dev0 ? priv->netdev1 : priv->netdev0;
+
+	if (txdev && netif_queue_stopped(txdev))
+		netif_wake_queue(txdev);
+}
+
+/*
  * NAPI poll for either nata0 or nata1.
  * Ring dequeue under short spinlock; stack inject outside the lock so TX
  * can keep filling slots while we hand skbs to the peer stack.
@@ -22,6 +34,8 @@ static int nata_poll(struct napi_struct *napi, int budget)
 
 		spin_lock(&priv->lock);
 		ret = sim_rx_dequeue(priv, is_dev0, &skb);
+		if (ret != 0)
+			nata_wake_tx_peer(priv, is_dev0);
 		spin_unlock(&priv->lock);
 
 		if (ret == 0)
@@ -48,11 +62,14 @@ static int nata_poll(struct napi_struct *napi, int budget)
 }
 
 /*
- * Transmit for nata0: enqueue upper-half ring, schedule nata1 NAPI.
+ * Common TX: enqueue, apply queue stop/wake backpressure, schedule peer NAPI.
+ * is_dev0: 1 = nata0, 0 = nata1.
  */
-static netdev_tx_t nata_xmit_0(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t nata_xmit(struct sk_buff *skb, struct net_device *dev,
+			     int is_dev0)
 {
 	struct nata_priv *priv = *(struct nata_priv **)netdev_priv(dev);
+	struct napi_struct *peer_napi;
 	int ret;
 
 	if (!priv || !priv->sim_mailbox) {
@@ -60,14 +77,37 @@ static netdev_tx_t nata_xmit_0(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_OK;
 	}
 
+	peer_napi = is_dev0 ? &priv->napi1 : &priv->napi0;
+
 	spin_lock_bh(&priv->lock);
 
-	ret = sim_tx_packet(priv, skb, 1); /* 1 for dev0 (nata0) */
+	ret = sim_tx_packet(priv, skb, is_dev0);
+	if (ret == -ENOSPC) {
+		/*
+		 * Ring full: stop this TX queue and ask the stack to retry.
+		 * Do not free the skb; do not count as a packet drop.
+		 */
+		priv->ring_full_drops++;
+		netif_stop_queue(dev);
+		spin_unlock_bh(&priv->lock);
+		/* Ensure peer is draining; full ring means consumer is behind */
+		napi_schedule(peer_napi);
+		return NETDEV_TX_BUSY;
+	}
+
 	if (ret == 0) {
 		dev->stats.tx_packets++;
 		dev->stats.tx_bytes += skb->len;
-		priv->tx_packets_0++;
-		priv->tx_bytes_0 += skb->len;
+		if (is_dev0) {
+			priv->tx_packets_0++;
+			priv->tx_bytes_0 += skb->len;
+		} else {
+			priv->tx_packets_1++;
+			priv->tx_bytes_1 += skb->len;
+		}
+		/* Proactive stop if this fill exhausted free slots */
+		if (check_tx_full(priv, is_dev0))
+			netif_stop_queue(dev);
 	} else {
 		dev->stats.tx_errors++;
 	}
@@ -75,44 +115,24 @@ static netdev_tx_t nata_xmit_0(struct sk_buff *skb, struct net_device *dev)
 	spin_unlock_bh(&priv->lock);
 
 	if (ret == 0)
-		napi_schedule(&priv->napi1);
+		napi_schedule(peer_napi);
 
-	dev_consume_skb_any(skb);
+	if (ret == 0)
+		dev_consume_skb_any(skb);
+	else
+		dev_kfree_skb_any(skb);
+
 	return NETDEV_TX_OK;
 }
 
-/*
- * Transmit for nata1: enqueue lower-half ring, schedule nata0 NAPI.
- */
+static netdev_tx_t nata_xmit_0(struct sk_buff *skb, struct net_device *dev)
+{
+	return nata_xmit(skb, dev, 1);
+}
+
 static netdev_tx_t nata_xmit_1(struct sk_buff *skb, struct net_device *dev)
 {
-	struct nata_priv *priv = *(struct nata_priv **)netdev_priv(dev);
-	int ret;
-
-	if (!priv || !priv->sim_mailbox) {
-		dev_kfree_skb_any(skb);
-		return NETDEV_TX_OK;
-	}
-
-	spin_lock_bh(&priv->lock);
-
-	ret = sim_tx_packet(priv, skb, 0); /* 0 for dev1 (nata1) */
-	if (ret == 0) {
-		dev->stats.tx_packets++;
-		dev->stats.tx_bytes += skb->len;
-		priv->tx_packets_1++;
-		priv->tx_bytes_1 += skb->len;
-	} else {
-		dev->stats.tx_errors++;
-	}
-
-	spin_unlock_bh(&priv->lock);
-
-	if (ret == 0)
-		napi_schedule(&priv->napi0);
-
-	dev_consume_skb_any(skb);
-	return NETDEV_TX_OK;
+	return nata_xmit(skb, dev, 0);
 }
 
 static int nata_open(struct net_device *dev)
@@ -159,6 +179,11 @@ int nata_net_init(struct nata_priv *priv)
 {
 	struct net_device *dev0, *dev1;
 	struct nata_priv **priv_ptr0, **priv_ptr1;
+
+	/* Geometry must stay 128 KiB total (two 64 KiB halves) */
+	BUILD_BUG_ON(NATA_MAILBOX_BYTES != 131072);
+	BUILD_BUG_ON(NATA_RING_SLOTS * NATA_SLOT_BYTES != 65536);
+	BUILD_BUG_ON(NATA_SLOT_BYTES - NATA_SLOT_PAYLOAD_OFF < ETH_FRAME_LEN);
 
 	/* 1. Register Virtual NIC nata0 */
 	dev0 = alloc_etherdev(sizeof(struct nata_priv *));
@@ -219,6 +244,7 @@ int nata_net_init(struct nata_priv *priv)
 	netif_carrier_on(dev0);
 	netif_carrier_on(dev1);
 
-	pr_info("NATA: Registered virtual interfaces nata0 and nata1 (NAPI RX).\n");
+	pr_info("NATA: Registered nata0/nata1 (NAPI RX, %d-slot rings, TX backpressure).\n",
+		NATA_RING_SLOTS);
 	return 0;
 }

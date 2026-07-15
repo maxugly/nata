@@ -89,7 +89,7 @@ These specs are a **contract**, not a brochure:
 - Put **ugly metrics** in tables with causes (e.g. TCP retransmits under load, UDP loss, `ring_full_drops`).
 - Explain **confusing parts** in dedicated short sections (historical naming, defaults that disagree across layers).
 - End incomplete subsystems with a **Gaps to production** (or equivalent) checklist of concrete missing items.
-- Keep **cross-doc identity**: one mailbox size (128 KiB), 8-slot rings, 16 sectors/slot, LBA split (0–127 / 128–255), valid@0 + header@4 — specs and code must match.
+- Keep **cross-doc identity**: one mailbox size (128 KiB), 32-slot rings, 4 sectors/slot, LBA split (0–127 / 128–255), valid@0 + header@4 — specs and code must match.
 
 ### What not to do
 
