@@ -46,12 +46,12 @@ Two host AHCI controllers never speak Host-to-Host. The bridge appears as a SATA
 
 **Mailbox layout (simulation defaults):**
 
-| Region | LBA range (approx.) | Role |
-|--------|---------------------|------|
-| Lower 64 KiB | 0–127 | TX for `nata1` / RX for `nata0` |
-| Upper 64 KiB | 128–255 | TX for `nata0` / RX for `nata1` |
+| Region | LBA range | Role |
+|--------|-----------|------|
+| Lower 64 KiB | 0–127 | **8-slot ring**: TX for `nata1` / RX for `nata0` |
+| Upper 64 KiB | 128–255 | **8-slot ring**: TX for `nata0` / RX for `nata1` |
 
-Each packet is prefixed with a small NATA header (`magic`, `len`, `seq`) and padded to 512-byte sectors. Transmit publishes payload then header (with memory barriers); receive validates length (`ETH_HLEN` … `ETH_FRAME_LEN`) and sequence before injecting into the network stack via `netif_rx`.
+Each half is an 8×8192-byte ring (slot = `valid` + `nata_pkt_hdr` + payload). Producer advances head; consumer advances tail. Full ring **drops** (no overwrite). Publish order: payload+header, barrier, then `valid=1`. See [docs/specs/03-mailbox-memory-map.md](docs/specs/03-mailbox-memory-map.md).
 
 Further electrical and protocol rationale: [docs/whitepaper.md](docs/whitepaper.md).
 
@@ -184,16 +184,16 @@ sudo ip netns exec nata-a iperf3 -c 192.168.42.2 -t 10 -R   # reverse
 sudo ip netns exec nata-a iperf3 -c 192.168.42.2 -u -b 0 -t 10
 ```
 
-**Measured results** (2026-07-15, Linux 6.8.0, AMD EPYC-Milan, 8 vCPU; in-kernel mailbox simulation — not SATA hardware):
+**Measured results** (2026-07-15, Linux 6.8.0, AMD EPYC-Milan, 8 vCPU; **8-slot ring** sim mailbox — not SATA hardware):
 
 | Metric | Direction | Result |
 |--------|-----------|--------|
-| **ICMP RTT** | `nata-a` → `nata-b` | min **0.072 ms** / avg **0.151 ms** / max **0.453 ms** (50 pkts, 0% loss) |
-| **TCP throughput** | `nata-a` → `nata-b` | **~600 Mbit/s** sender / **~587 Mbit/s** receiver (10 s) |
-| **TCP throughput** | `nata-b` → `nata-a` (iperf3 `-R`) | **~609 Mbit/s** sender / **~608 Mbit/s** receiver (10 s) |
-| **UDP goodput** | `nata-a` → `nata-b` | **~2.23 Gbit/s** receiver (**~4.04 Gbit/s** offered; ~45% loss at unlimited rate) |
+| **ICMP RTT** | `nata-a` → `nata-b` | min **0.043 ms** / avg **0.083 ms** / max **0.161 ms** (50 pkts, 0% loss) |
+| **TCP throughput** | `nata-a` → `nata-b` | **~3.70 Gbit/s** (10 s; ~55k retransmits) |
+| **TCP throughput** | `nata-b` → `nata-a` (iperf3 `-R`) | **~3.77 Gbit/s** (10 s; ~58k retransmits) |
+| **UDP goodput** | `nata-a` → `nata-b` | **~3.54 Gbit/s** receiver (**~3.67 Gbit/s** offered; **~3.4%** loss at unlimited rate) |
 
-These numbers reflect software encapsulation and the shared mailbox path on one host. Hardware SATA Gen1/Gen2 PHY rates and FIS overhead will differ; re-measure on real bridge silicon.
+Single-slot baseline the same day was ~0.6 Gbit/s TCP and ~45% UDP loss — see [docs/specs/08-performance.md](docs/specs/08-performance.md). Hardware SATA rates will differ again.
 
 ### 5. Unload
 
@@ -250,7 +250,7 @@ When device binding is implemented, the same module will attach to a real target
 NATA is for environments where the only free high-speed interconnect is a SATA port, or where the research goal is storage-bus packet transport. It is complementary to Ethernet, not a general replacement for datacenter NICs.
 
 **What is the effective throughput?**  
-The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS overhead, interrupt/notification path, and CPU cost of encapsulation. In **simulation** (same-host mailbox), expect roughly **~0.6 Gbit/s TCP** and **~2 Gbit/s UDP goodput** with sub-millisecond RTT — see [Benchmark (simulation)](#4-benchmark-simulation). Re-measure with `iperf3` / `ping` on real hardware once the bridge path is live.
+The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS overhead, interrupt/notification path, and CPU cost of encapsulation. In **simulation** (same-host 8-slot mailbox rings), expect roughly **~3.7 Gbit/s TCP** and **~3.5 Gbit/s UDP goodput** with sub-millisecond RTT — see [Benchmark (simulation)](#4-benchmark-simulation). Re-measure with `iperf3` / `ping` on real hardware once the bridge path is live.
 
 **Can I boot over NATA?**  
 Not supported. The module assumes a running kernel and registers virtual netdevs; it is not an iSCSI target or PXE path.

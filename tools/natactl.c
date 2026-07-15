@@ -109,6 +109,11 @@ static int do_status(void)
         printf("  TX Packets:     %llu\n", (unsigned long long)status.sim_tx_packets_1);
         printf("  RX Packets:     %llu\n", (unsigned long long)status.sim_rx_packets_1);
         printf("--------------------------------------------------\n");
+        printf("Ring (upper / nata0 TX):\n");
+        printf("  head/tail:      %u / %u\n", status.ring_head_0, status.ring_tail_0);
+        printf("Ring (lower / nata1 TX):\n");
+        printf("  head/tail:      %u / %u\n", status.ring_head_1, status.ring_tail_1);
+        printf("Ring full drops:  %llu\n", (unsigned long long)status.ring_full_drops);
         printf("Dropped Blocks:   %llu\n", (unsigned long long)status.dropped_blocks);
         printf("Sim Interrupts:   %llu\n", (unsigned long long)status.interrupt_counts);
     } else if (status.is_bound) {

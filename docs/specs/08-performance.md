@@ -1,193 +1,112 @@
 # 08 — Performance Specification (Simulation)
 
-**Spec version:** 0.1 (as-built)  
-**Status:** MEASURED (lab baseline 2026-07-15)  
+**Spec version:** 0.2 (as-built)  
+**Status:** MEASURED (lab baseline re-run 2026-07-15 after 8-slot ring)  
 **Mode:** In-kernel mailbox simulation only — **not** SATA PHY throughput  
 
 ---
 
 ## 1. Scope
 
-These numbers characterize the **software path**:
-
 ```text
-netdev TX → spinlock → memcpy mailbox → wake → kthread → memcpy → netif_rx
+netdev TX → spinlock → ring enqueue → wake → kthread drain → netif_rx
 ```
 
-They bound encapsulation overhead and single-slot mailbox behavior. They **do not** represent:
-
-- SATA Gen1 (1.5 Gbit/s) or Gen2 (3.0 Gbit/s) line rate  
-- FIS/8b10b/protocol efficiency on wire  
-- Dual-host CPU + interrupt overhead  
+Numbers bound software encapsulation with an **8-slot ring per direction**. They are not SATA line rate.
 
 ---
 
-## 2. Lab environment (baseline)
+## 2. Lab environment
 
 | Item | Value |
 |------|--------|
-| Date | 2026-07-15 |
+| Date | 2026-07-15 (post ring) |
 | Kernel | Linux 6.8.0-124-generic |
 | CPU | AMD EPYC-Milan, 8 vCPU |
-| Module | `nata.ko` simulation (`target_ata_port=-1`) |
-| Topology | netns `nata-a` (`nata0` / 192.168.42.1) ↔ `nata-b` (`nata1` / 192.168.42.2) |
+| Module | `nata.ko` sim, **8×16-sector rings** |
+| Topology | netns `nata-a` ↔ `nata-b` |
 | Tools | `ping`, `iperf3` 3.16 |
 
 ---
 
-## 3. Latency (ICMP)
-
-### 3.1 Method
-
-```bash
-ip netns exec nata-a ping -c 50 -i 0.2 192.168.42.2
-```
-
-### 3.2 Results
+## 3. Latency (ICMP, 50 packets)
 
 | Metric | Value |
 |--------|-------|
-| Packets | 50 sent / 50 received |
 | Loss | **0%** |
-| RTT min | **0.072 ms** |
-| RTT avg | **0.151 ms** |
-| RTT max | **0.453 ms** |
+| RTT min / avg / max | **0.043 / 0.083 / 0.161 ms** |
 
-### 3.3 Interpretation
-
-Sub-millisecond RTT is expected for same-host memory copy + scheduling. Max spikes reflect scheduler preemption, not physical serialization delay.
+Single-packet latency remains sub-millisecond (same host path).
 
 ---
 
-## 4. TCP throughput (iperf3)
+## 4. TCP throughput (iperf3, 10 s)
 
-### 4.1 Method
+| Direction | Bitrate | Retransmits (10 s) |
+|-----------|---------|---------------------|
+| A → B | **~3.70 Gbit/s** (sender = receiver) | **~55k** |
+| B → A (`-R`) | **~3.77 Gbit/s** | **~58k** |
 
-```bash
-# server
-ip netns exec nata-b iperf3 -s
-# client forward
-ip netns exec nata-a iperf3 -c 192.168.42.2 -t 10 -i 2
-# client reverse (server sends)
-ip netns exec nata-a iperf3 -c 192.168.42.2 -t 10 -i 2 -R
-```
+### Prior single-slot baseline (same host, earlier same day)
 
-### 4.2 Results
+| Metric | Single-slot | 8-slot ring |
+|--------|-------------|-------------|
+| TCP goodput | ~0.60 Gbit/s | **~3.7 Gbit/s** |
+| TCP retransmits / 10 s | ~164k | **~55–58k** |
 
-| Direction | Sender | Receiver | Transfer (10 s) | Notes |
-|-----------|--------|----------|-----------------|-------|
-| A → B | **~600 Mbit/s** | **~587 Mbit/s** | ~715 MiB | High TCP retransmits observed |
-| B → A (`-R`) | **~609 Mbit/s** | **~608 Mbit/s** | ~726 MiB | Symmetric within noise |
-
-### 4.3 Interval sample (A → B)
-
-| Interval | Bitrate (approx.) |
-|----------|-------------------|
-| 0–2 s | 549 Mbit/s |
-| 2–4 s | 586 Mbit/s |
-| 4–6 s | 572 Mbit/s |
-| 6–8 s | 662 Mbit/s |
-| 8–10 s | 628 Mbit/s |
-
-### 4.4 Retransmits
-
-Order of **~1.6×10⁵** retransmits per 10 s stream was observed. Primary causes under current design:
-
-1. **Single-slot mailbox** — publisher overwrites unconsumed frames  
-2. No L2 flow control / TX queue stop on “busy” mailbox  
-3. RX via dedicated kthread + `netif_rx` rather than high-rate NAPI  
-
-TCP remains correct (reliable byte stream) but goodput is far below raw memory bandwidth.
+Retransmits are **not** zero: ring depth 8 still underfills vs TCP burst + kthread/`netif_rx` scheduling. They dropped ~3× while throughput rose ~6×. Full elimination needs deeper rings, NAPI, or TX backpressure (`NETDEV_TX_BUSY`).
 
 ---
 
-## 5. UDP throughput (iperf3)
+## 5. UDP (iperf3 unlimited, 10 s)
 
-### 5.1 Method
+| Side | Result |
+|------|--------|
+| Sender offered | **~3.67 Gbit/s** |
+| Receiver goodput | **~3.54 Gbit/s** |
+| Loss | **~3.4%** |
 
-```bash
-ip netns exec nata-a iperf3 -c 192.168.42.2 -u -b 0 -t 10 -i 2
-```
+### Prior single-slot baseline
 
-`-b 0` = unlimited offer rate.
+| Metric | Single-slot | 8-slot ring |
+|--------|-------------|-------------|
+| UDP goodput | ~2.23 Gbit/s | **~3.54 Gbit/s** |
+| UDP loss (unlimited) | ~45% | **~3.4%** |
 
-### 5.2 Results
-
-| Side | Bitrate | Notes |
-|------|---------|-------|
-| Sender offered | **~4.04 Gbit/s** | ~4.70 GiB in 10 s |
-| Receiver goodput | **~2.23 Gbit/s** | ~2.60 GiB delivered |
-| Loss | **~45%** of datagrams | Jitter ~0.002 ms at receiver |
-
-### 5.3 Interpretation
-
-UDP exposes the **drop/overwrite ceiling** without retransmission. Receiver goodput (~2.2 Gbit/s) is the useful “how hard can the path push one-way” figure under this host. Offered rate above that is discarded.
+Ring-full drops appear under flood (`ring_full_drops` in `natactl status`) instead of silent overwrite.
 
 ---
 
 ## 6. Summary table (normative for README)
 
-| Metric | Result |
-|--------|--------|
-| ICMP RTT avg | **~0.15 ms** |
-| TCP goodput (either direction) | **~0.6 Gbit/s** |
-| UDP goodput (unlimited offer) | **~2.2 Gbit/s** |
-| UDP loss at unlimited offer | **~45%** |
+| Metric | Result (8-slot ring) |
+|--------|----------------------|
+| ICMP RTT avg | **~0.08 ms** |
+| TCP goodput | **~3.7 Gbit/s** either direction |
+| TCP retransmits / 10 s | **~5.5e4** (improved vs ~1.6e5 single-slot; not zero) |
+| UDP goodput | **~3.5 Gbit/s** |
+| UDP loss at unlimited offer | **~3.4%** |
 
 ---
 
-## 7. Theoretical vs measured (context)
+## 7. Design limits still in play
 
-| Bound | Approximate ceiling | Relation to NATA sim |
-|-------|---------------------|----------------------|
-| SATA Gen2 raw | 3.0 Gbit/s signaling | Hardware target, not sim |
-| SATA Gen2 8b/10b payload | ~2.4 Gbit/s | Hardware target |
-| Ethernet 1G | 1 Gbit/s | Sim TCP already near 0.6G; UDP goodput can exceed 1G on host |
-| Host memory copy | Tens of Gbit/s | Not reached; software structure limited |
-
----
-
-## 8. Performance-relevant design limits
-
-| Limit | Spec impact |
-|-------|-------------|
-| One packet slot per direction | Hard cap under concurrent TX |
-| `spin_lock_bh` around full frame copy | Serializes both directions somewhat |
-| No TSO/GSO/checksum offload | Per-frame CPU cost |
-| `netif_rx` | Softnet backlog pressure under flood |
-| kthread wakeup per packet | Scheduling cost vs pure NAPI poll |
+| Limit | Impact |
+|-------|--------|
+| Ring depth 8 | Finite burst absorption; then `-ENOSPC` drops |
+| `spin_lock_bh` + kthread | Serialization and scheduling lag |
+| No `NETDEV_TX_BUSY` | Stack may keep offering until ring full drops |
+| `netif_rx` | Softnet pressure under flood |
 
 ---
 
-## 9. Re-measurement procedure
+## 8. Re-measurement
 
-1. `sudo ./scripts/nata-ns-up.sh`  
-2. Run §3 and §4 commands; capture full iperf3 summaries  
-3. Record `uname -r`, CPU model, `nproc`, date  
-4. Update this document and README table if results change by **>15%** or design changes  
-
-Optional telemetry:
-
-```bash
-./tools/natactl status
-ip netns exec nata-a ip -s link show nata0
-```
+Re-run after ring depth, locking, or RX path changes; update if results move **>15%**. Record `natactl status` ring_full_drops after iperf.
 
 ---
 
-## 10. Hardware performance (PLANNED)
+## 9. Related
 
-No measured dual-host SATA numbers exist in-tree. When available, document separately:
-
-- Link rate negotiated (1.5 / 3.0 Gbit/s)  
-- iperf3 TCP/UDP host-to-host  
-- CPU% and interrupt rate with AN  
-- Comparison to this simulation baseline  
-
----
-
-## 11. Related
-
-- [02-packet-format.md](02-packet-format.md)  
 - [03-mailbox-memory-map.md](03-mailbox-memory-map.md)  
-- [06-simulation-and-netns.md](06-simulation-and-netns.md)  
+- [02-packet-format.md](02-packet-format.md)  

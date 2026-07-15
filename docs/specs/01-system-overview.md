@@ -26,7 +26,7 @@ NATA does **not** implement:
 | G2 | L3 usable on same host for development | Separate network namespaces (`nata-a`, `nata-b`) |
 | G3 | Sector-aligned encapsulation | 16-byte NATA header + frame, padded to 512 B sectors |
 | G4 | Safe concurrent mailbox access | Single spinlock + `smp_wmb`/`smp_rmb` publication order |
-| G5 | No busy-spin on bad frames | Invalid length/seq advances `last_rx_seq`; RX threads sleep on waitqueues |
+| G5 | No busy-spin on bad frames | Invalid slots clear `valid` and advance tail; RX threads sleep on waitqueues |
 | G6 | Dual-host SATA path | **PLANNED** — RTL stubs + whitepaper only |
 
 ---
@@ -89,7 +89,7 @@ NATA does **not** implement:
 | Side A | `nata0` | `nata-a` | `192.168.42.1/24` | LBA 128–255 (upper 64 KiB) | LBA 0–127 (lower 64 KiB) |
 | Side B | `nata1` | `nata-b` | `192.168.42.2/24` | LBA 0–127 (lower 64 KiB) | LBA 128–255 (upper 64 KiB) |
 
-**Invariant:** Side A’s TX region is Side B’s RX region and vice versa. There is exactly **one outstanding slot** per direction in the current design (overwrite by newer `seq` at the region base LBA).
+**Invariant:** Side A’s TX region is Side B’s RX region and vice versa. Each direction is an **8-slot ring** (drop when full; no overwrite of published slots).
 
 ---
 
@@ -123,7 +123,7 @@ NATA is **not** a TUN/TAP userspace tunnel. Encapsulation runs in the kernel `nd
 | RX poll/thread + inject | Yes | TBD (AN-driven) |
 | ARP / ICMP / TCP / UDP | Yes (with netns) | TBD |
 | Sequence numbers | Yes | Same format intended |
-| Multi-packet ring queue | **No** (single slot/dir) | **No** yet |
+| Multi-packet ring queue | **Yes** (8 slots/dir in sim) | **No** on FPGA yet |
 | Flow control / backpressure | Minimal (always `NETDEV_TX_OK`) | TBD |
 | IDENTIFY DEVICE (ATA) | N/A | Stub in RTL |
 | READ/WRITE DMA EXT | N/A | Stub state machine in RTL |
@@ -149,9 +149,9 @@ Module and userspace share `module/nata.h` for ioctl layouts; any ABI change to 
 
 ## 9. Non-goals and known limitations
 
-1. **Single-slot mailbox per direction** — a new TX overwrites the previous frame at the region base before the peer may have received it; no ring, no credit scheme.
+1. **Finite ring depth (8)** — under flood, TX drops with `ring_full_drops` instead of overwriting; still not infinite buffering or credit-based flow control.
 2. **Same-host default netns** — assigning both IPs in one namespace fails ARP/IP locality checks; netns isolation is required for end-to-end IP tests.
-3. **High TCP retransmit rates under load** are expected in sim due to overwrite/drop under concurrent fill; see [08-performance.md](08-performance.md).
+3. **TCP retransmits under extreme load** still occur (scheduling / depth), but are much lower than the old single-slot design; see [08-performance.md](08-performance.md).
 4. **No MTU customization** — standard Ethernet frame bounds enforced on RX (`ETH_HLEN` … `ETH_FRAME_LEN`); default netdev MTU from `alloc_etherdev`.
 5. **Hardware path is not production-ready** — RTL is architectural scaffolding, not a verified SATA device IP.
 

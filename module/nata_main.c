@@ -35,9 +35,10 @@ static int nata_rx_thread_0(void *data)
         if (kthread_should_stop())
             break;
 
-        /* Share priv->lock with TX so mailbox header/payload pairs are atomic */
+        /* Drain ring under lock (may have multiple slots pending) */
         spin_lock_bh(&priv->lock);
-        sim_rx_one_packet(priv, 1); /* 1 for dev0 (nata0) */
+        while (sim_rx_one_packet(priv, 1) > 0)
+            ;
         spin_unlock_bh(&priv->lock);
     }
     pr_info("NATA: RX thread for nata0 stopped.\n");
@@ -51,7 +52,7 @@ static int nata_rx_thread_1(void *data)
 
     pr_info("NATA: RX thread for nata1 started.\n");
     while (!kthread_should_stop()) {
-        /* Wait until there is a new packet at rx_lba_1 (upper 64KB) or we are stopping */
+        /* Wait until upper-half ring has a published slot or we are stopping */
         wait_event_interruptible(priv->rx_wait_1,
             kthread_should_stop() || check_rx_pending(priv, 0));
 
@@ -59,7 +60,8 @@ static int nata_rx_thread_1(void *data)
             break;
 
         spin_lock_bh(&priv->lock);
-        sim_rx_one_packet(priv, 0); /* 0 for dev1 (nata1) */
+        while (sim_rx_one_packet(priv, 0) > 0)
+            ;
         spin_unlock_bh(&priv->lock);
     }
     pr_info("NATA: RX thread for nata1 stopped.\n");
@@ -100,13 +102,19 @@ static long nata_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         status.rx_packets = priv->rx_packets_0;
         status.rx_bytes = priv->rx_bytes_0;
         status.dropped_blocks = priv->dropped_blocks;
-        status.interrupt_counts = priv->tx_packets_0 + priv->tx_packets_1; // simulated interrupt triggers
+        status.interrupt_counts = priv->tx_packets_0 + priv->tx_packets_1; /* synthetic AN count */
 
         /* Copy detailed simulation stats */
         status.sim_tx_packets_0 = priv->tx_packets_0;
         status.sim_rx_packets_0 = priv->rx_packets_0;
         status.sim_tx_packets_1 = priv->tx_packets_1;
         status.sim_rx_packets_1 = priv->rx_packets_1;
+
+        status.ring_head_0 = priv->tx_head_0;
+        status.ring_tail_0 = priv->tx_tail_0;
+        status.ring_head_1 = priv->tx_head_1;
+        status.ring_tail_1 = priv->tx_tail_1;
+        status.ring_full_drops = priv->ring_full_drops;
         spin_unlock_bh(&priv->lock);
 
         if (copy_to_user((void __user *)arg, &status, sizeof(status)))
@@ -146,14 +154,20 @@ static int __init nata_init(void)
 
     spin_lock_init(&global_priv->lock);
 
-    /* Configure mailbox LBA offsets:
-     * nata0 transmits to upper 64KB (LBA 128), reads from lower 64KB (LBA 0)
-     * nata1 transmits to lower 64KB (LBA 0), reads from upper 64KB (LBA 128)
+    /* Configure mailbox LBA bases (8-slot ring starts at each half base):
+     * nata0 TX ring: upper 64KB LBA 128; nata0 RX: lower 64KB LBA 0
+     * nata1 TX ring: lower 64KB LBA 0;   nata1 RX: upper 64KB LBA 128
      */
     global_priv->tx_lba_0 = 128;
     global_priv->rx_lba_0 = 0;
     global_priv->tx_lba_1 = 0;
     global_priv->rx_lba_1 = 128;
+
+    /* Ring indices zeroed by kzalloc; explicit for clarity */
+    global_priv->tx_head_0 = 0;
+    global_priv->tx_tail_0 = 0;
+    global_priv->tx_head_1 = 0;
+    global_priv->tx_tail_1 = 0;
 
     /* Allocate persistent memory for simulated BRAM mailbox (128 KB via vmalloc) */
     global_priv->sim_mailbox = vmalloc(131072);

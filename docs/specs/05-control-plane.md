@@ -1,7 +1,7 @@
 # 05 — Control Plane Specification
 
-**Spec version:** 0.1 (as-built)  
-**Status:** IMPLEMENTED (`STATUS`); PARTIAL (`BIND`/`UNBIND`)  
+**Spec version:** 0.2 (as-built)  
+**Status:** IMPLEMENTED (`STATUS` + ring stats); PARTIAL (`BIND`/`UNBIND`)  
 **Sources:** `module/nata.h`, `module/nata_main.c`, `tools/natactl.c`, `module/99-nata.rules`
 
 ---
@@ -95,6 +95,11 @@ struct nata_ioc_status {
     u64  sim_rx_packets_0;
     u64  sim_tx_packets_1;
     u64  sim_rx_packets_1;
+    u32  ring_head_0;
+    u32  ring_tail_0;
+    u32  ring_head_1;
+    u32  ring_tail_1;
+    u64  ring_full_drops;
 };
 ```
 
@@ -108,9 +113,12 @@ struct nata_ioc_status {
 | `tx_lba_start` | `priv->tx_lba_0` (128) |
 | `rx_lba_start` | `priv->rx_lba_0` (0) |
 | `tx_packets` … `rx_bytes` | nata0 counters |
-| `dropped_blocks` | shared drop counter |
+| `dropped_blocks` | shared drop counter (includes ring-full) |
 | `interrupt_counts` | `tx_packets_0 + tx_packets_1` |
 | `sim_*_0` / `sim_*_1` | per-NIC packet counts |
+| `ring_head_0` / `ring_tail_0` | upper half ring indices |
+| `ring_head_1` / `ring_tail_1` | lower half ring indices |
+| `ring_full_drops` | TX drops when ring full |
 
 `copy_to_user` failure → `-EFAULT`.
 

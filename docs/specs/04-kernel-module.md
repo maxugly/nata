@@ -1,6 +1,6 @@
 # 04 — Kernel Module Specification
 
-**Spec version:** 0.1 (as-built)  
+**Spec version:** 0.2 (as-built)  
 **Status:** IMPLEMENTED (simulation datapath)  
 **Sources:** `module/nata_main.c`, `module/nata_net.c`, `module/nata_blk.c`, `module/nata.h`, `module/Makefile`
 
@@ -53,10 +53,11 @@ One module instance supports **exactly one** dual-NIC simulation (one mailbox, t
 | Sync | `lock` (spinlock) |
 | Mailbox | `sim_mailbox`, `tx_lba_0/1`, `rx_lba_0/1` |
 | RX threads | `rx_thread_0/1`, `rx_wait_0/1` |
-| Sequence | `tx_seq_0/1`, `last_rx_seq_0/1` |
-| Stats | `tx_packets/bytes_*`, `rx_packets/bytes_*`, `dropped_blocks` |
+| Ring | `tx_head_0/1`, `tx_tail_0/1` (8 slots/dir) |
+| Observability seq | `tx_seq_0/1` (written into header only) |
+| Stats | `tx_packets/bytes_*`, `rx_packets/bytes_*`, `dropped_blocks`, `ring_full_drops` |
 
-Full layout: `module/nata.h`.
+Full layout: `module/nata.h` (kernel-only `struct nata_priv`; ioctl structs shared with userspace).
 
 ---
 
@@ -69,8 +70,8 @@ Ordered steps:
 1. Log simulation banner messages  
 2. `kzalloc(sizeof(struct nata_priv))` → `global_priv`  
 3. `spin_lock_init`  
-4. Set LBA bases: TX0=128, RX0=0, TX1=0, RX1=128  
-5. `vmalloc(131072)` mailbox; `memset` zero  
+4. Set LBA bases: TX0=128, RX0=0, TX1=0, RX1=128; head/tail = 0  
+5. `vmalloc(131072)` mailbox; `memset` zero (all slots empty)  
 6. `init_waitqueue_head` for both RX waits  
 7. `kthread_run(nata_rx_thread_0, …, "nata_rx_0")`  
 8. `kthread_run(nata_rx_thread_1, …, "nata_rx_1")`  
@@ -135,7 +136,7 @@ Symmetric: `sim_tx_packet(..., is_dev0=0)`, wake `rx_wait_0`, stats `_*_1`.
 
 #### Backpressure policy
 
-Always returns **`NETDEV_TX_OK`** and consumes the skb. There is **no** `NETDEV_TX_BUSY`, no queue stop on mailbox full, and no drop of skb on TX error (still consumed). TX errors only increment counters when `sim_tx_packet` fails.
+Always returns **`NETDEV_TX_OK`** and consumes the skb. Ring full (`sim_tx_packet` → `-ENOSPC`) increments `tx_errors`, `dropped_blocks`, and `ring_full_drops` — still no `NETDEV_TX_BUSY` / queue stop.
 
 ### 5.4 `is_dev0` convention (critical)
 
@@ -143,10 +144,14 @@ In `nata_blk.c` helpers, parameter name `is_dev0`:
 
 | Call site | Value | Side |
 |-----------|-------|------|
-| nata0 TX / RX | `1` | uses `tx_lba_0` / `rx_lba_0`, seq_0 |
-| nata1 TX / RX | `0` | uses `tx_lba_1` / `rx_lba_1`, seq_1 |
+| nata0 TX / RX | `1` | upper TX ring / lower RX ring |
+| nata1 TX / RX | `0` | lower TX ring / upper RX ring |
 
 Naming is historical; treat as “operating on nata0 when nonzero”.
+
+### 5.5 Ring TX (`sim_tx_packet`)
+
+Enqueue at `head` of the peer-facing half. If `valid==1` at head, ring is full — drop, no overwrite. Else write payload+header, `smp_wmb()`, set `valid=1`, advance head. See [02](02-packet-format.md) and [03](03-mailbox-memory-map.md).
 
 ---
 
@@ -159,38 +164,35 @@ Naming is historical; treat as “operating on nata0 when nonzero”.
 | `nata_rx_0` | `nata_rx_thread_0` | `rx_wait_0` | `is_dev0=1` (nata0) |
 | `nata_rx_1` | `nata_rx_thread_1` | `rx_wait_1` | `is_dev0=0` (nata1) |
 
-Loop body:
+Loop body (drain entire ring per wake):
 
 ```text
 wait_event_interruptible(waitq, kthread_should_stop() || check_rx_pending(...))
 if stop → break
 spin_lock_bh
-sim_rx_one_packet(...)
+while sim_rx_one_packet(...) > 0
+    ;
 spin_unlock_bh
 ```
 
 ### 6.2 Pending check (`check_rx_pending`)
 
-Lock-free header peek:
+Lock-free peek at **tail** slot of the RX ring:
 
 ```text
-hdr = (nata_pkt_hdr *)(sim_mailbox + rx_lba * 512)
-return magic == NATA_MAGIC && seq != last_rx_seq
+return nata_slot_read_valid(slot_at_tail) == 1
 ```
 
 ### 6.3 Packet inject (`sim_rx_one_packet`)
 
-1. Copy header  
-2. Exit 0 if not new  
-3. Validate `len` ∈ `[ETH_HLEN, ETH_FRAME_LEN]`; else drop+consume  
-4. Validate sector span  
-5. `dev_alloc_skb(len + 2)`; `skb_reserve(2)` for IP align  
-6. `smp_rmb`; copy payload  
-7. `skb->dev = netdev`; `eth_type_trans`; `netif_rx`  
-8. On `NET_RX_DROP`: `dropped_blocks++`, consume seq  
-9. On success: update `dev->stats` and priv rx counters; set `last_rx_seq`  
+1. If tail slot `valid != 1` → return 0 (empty)  
+2. `smp_rmb()`; copy header from slot+4  
+3. Validate magic/len; on failure: drop count, clear valid, advance tail  
+4. `dev_alloc_skb`; copy payload from slot+20  
+5. `eth_type_trans` + `netif_rx`  
+6. Clear valid, advance tail; update stats  
 
-**Injection API:** `netif_rx` (not NAPI `netif_receive_skb` budget loop). Fine for sim; may need revisit under high PPS.
+**Injection API:** `netif_rx` (not NAPI).
 
 ### 6.4 Wake sources
 
@@ -209,9 +211,9 @@ There is **no** timer-based poll fallback if a wake is lost; correctness assumes
 | Function | Role |
 |----------|------|
 | `sim_mailbox_io` | Generic sector R/W with bounds (available; hot path uses direct memcpy) |
-| `check_rx_pending` | Waitqueue predicate |
-| `sim_tx_packet` | Build header, payload-first publish |
-| `sim_rx_one_packet` | Validate, allocate skb, inject |
+| `check_rx_pending` | Waitqueue predicate (`valid` at tail) |
+| `sim_tx_packet` | Ring enqueue at head; drop if full |
+| `sim_rx_one_packet` | Ring dequeue at tail; inject or consume-drop |
 
 See [02-packet-format.md](02-packet-format.md) for field-level rules.
 
@@ -224,6 +226,7 @@ See [02-packet-format.md](02-packet-format.md) for field-level rules.
 | Counter | Increment condition |
 |---------|---------------------|
 | `tx_packets_0/1`, `tx_bytes_0/1` | Successful `sim_tx_packet` |
+| `ring_full_drops` | TX saw full ring (`-ENOSPC`) |
 | `rx_packets_0/1`, `rx_bytes_0/1` | Successful `netif_rx` path |
 | `dropped_blocks` | Bad len, sector overflow, skb alloc fail, `NET_RX_DROP` |
 
@@ -330,12 +333,12 @@ User/app
   → IP stack
     → dev_queue_xmit(nata0)
       → nata_xmit_0
-        → sim_tx_packet (publish upper half)
+        → sim_tx_packet (enqueue upper ring slot)
         → wake_up_interruptible(rx_wait_1)
 
 nata_rx_thread_1
   → wait_event(... check_rx_pending nata1 ...)
-  → sim_rx_one_packet
+  → while sim_rx_one_packet > 0  (drain)
     → netif_rx
       → IP stack peer
 ```

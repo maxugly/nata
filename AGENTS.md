@@ -11,7 +11,7 @@ DOX = durable, operational, executable documentation hierarchy. Parent rules app
 
 1. **As-built, not aspirational.** Describe what the tree *does*, not what someone wishes it did. Wishful design belongs in the whitepaper or a clearly marked PLANNED section — never mixed into normative “how it works” text without a tag.
 2. **Nothing is oversold.** Gaps are named: `IMPLEMENTED`, `PARTIAL`, `PLANNED`, `TBD`, `stub`, `N/A`. If the FPGA path is a stub, say stub. If bind returns `-EOPNOTSUPP`, document that return.
-3. **Ugly numbers stay in the table.** Retransmits, loss rates, single-slot overwrite, CPU cost — put them in specs with a short causal explanation. Do not bury failure modes in footnotes or omit them to look good.
+3. **Ugly numbers stay in the table.** Retransmits, loss rates, ring-full drops, CPU cost — put them in specs with a short causal explanation. Do not bury failure modes in footnotes or omit them to look good.
 4. **Confusing code gets a paragraph.** Historical names, inverted flags, surprising defaults (`is_dev0`, CLI LBA defaults vs kernel map) are first-class doc content. Save the next contributor three hours of debugger rage.
 5. **Cross-document consistency is mandatory.** One mailbox, one packet header, one LBA map — shared across protocol, memory map, kernel, RTL, and performance docs. If you change one number, fix every dependent doc in the same change.
 6. **Gaps to production are checklists.** Unfinished work ends in explicit bullet lists of what someone must still build — not vague “future work” paragraphs.
@@ -86,10 +86,10 @@ These specs are a **contract**, not a brochure:
 
 - Every normative spec file states **as-built** (and version/status) at the top.
 - Status tags on capabilities: `IMPLEMENTED` / `PARTIAL` / `PLANNED` / `TBD` / `stub` / `N/A`.
-- Put **ugly metrics** in tables with causes (e.g. ~1.6e5 TCP retransmits / 10s, ~45% UDP loss at unlimited offer, single-slot overwrite under load).
+- Put **ugly metrics** in tables with causes (e.g. TCP retransmits under load, UDP loss, `ring_full_drops`).
 - Explain **confusing parts** in dedicated short sections (historical naming, defaults that disagree across layers).
 - End incomplete subsystems with a **Gaps to production** (or equivalent) checklist of concrete missing items.
-- Keep **cross-doc identity**: one mailbox size (128 KiB), one sector size (512), one LBA split (0–127 / 128–255), one header layout — four documents, one mailbox.
+- Keep **cross-doc identity**: one mailbox size (128 KiB), 8-slot rings, 16 sectors/slot, LBA split (0–127 / 128–255), valid@0 + header@4 — specs and code must match.
 
 ### What not to do
 

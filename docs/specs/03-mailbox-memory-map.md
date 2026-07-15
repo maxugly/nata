@@ -1,14 +1,14 @@
 # 03 — Mailbox Memory Map Specification
 
-**Spec version:** 0.1 (as-built)  
-**Status:** IMPLEMENTED (simulation); PARTIAL (FPGA BRAM mirrors size)  
-**Normative code:** `module/nata_blk.c`, `module/nata_main.c`, `firmware/rtl/dual_port_ram.v`
+**Spec version:** 0.2 (as-built)  
+**Status:** IMPLEMENTED (simulation); PARTIAL (FPGA BRAM mirrors size, not ring protocol)  
+**Normative code:** `module/nata.h`, `module/nata_blk.c`, `module/nata_main.c`, `firmware/rtl/dual_port_ram.v`
 
 ---
 
 ## 1. Purpose
 
-The **mailbox** is the shared medium that carries NATA packets between the two endpoints. In simulation it is a single `vmalloc` region. On the FPGA target it is dual-ported BRAM of the same capacity and addressing model.
+The **mailbox** is the shared medium that carries NATA packets between the two endpoints. In simulation it is a single `vmalloc` region. On the FPGA target it is dual-ported BRAM of the same capacity. Software organizes each 64 KiB half as an **8-slot ring buffer**.
 
 ---
 
@@ -20,31 +20,31 @@ The **mailbox** is the shared medium that carries NATA packets between the two e
 | Sector size | **512 bytes** | ATA logical sector assumption |
 | Sector count | **256** | `131072 / 512` |
 | LBA range | **0 … 255** inclusive | Bounds checks use `>= 256` as invalid |
+| Ring slots per direction | **8** (`NATA_RING_SLOTS`, power of 2) | `nata.h` |
+| Sectors per slot | **16** (`NATA_SLOT_SECTORS`) | 8192 bytes/slot |
+| Bytes per half | **64 KiB** | 8 × 16 × 512 |
 | DWORD width (RTL) | 32 bits | `dual_port_ram` |
-| RTL depth | 32768 × 32-bit = 128 KiB | `reg [31:0] ram [0:32767]` |
-| Words per sector (RTL) | 128 | `512 / 4`; address `lba * 128 + dword_index` |
+| RTL depth | 32768 × 32-bit = 128 KiB | geometry only; no ring FSM in RTL yet |
 
 ---
 
 ## 3. Logical split (two half-mailboxes)
 
-The 256 sectors are split into two equal **64 KiB** halves. Each half is the **TX queue of one side** and the **RX queue of the peer**.
-
 ```text
 Byte offset     LBA        Region name     nata0 view      nata1 view
 -------------   ---------  --------------  --------------  --------------
-0x00000         0–127      Lower 64 KiB    RX              TX
-0x10000         128–255    Upper 64 KiB    TX              RX
+0x00000         0–127      Lower 64 KiB    RX ring         TX ring
+0x10000         128–255    Upper 64 KiB    TX ring         RX ring
 ```
 
 ### 3.1 Initialized LBA bases (`nata_init`)
 
 | Variable | Value | Meaning |
 |----------|-------|---------|
-| `tx_lba_0` | 128 | nata0 publishes frames here |
-| `rx_lba_0` | 0 | nata0 consumes frames from here |
-| `tx_lba_1` | 0 | nata1 publishes frames here |
-| `rx_lba_1` | 128 | nata1 consumes frames from here |
+| `tx_lba_0` | 128 | Base of nata0 TX ring (upper) |
+| `rx_lba_0` | 0 | Base of nata0 RX ring (lower = nata1 TX) |
+| `tx_lba_1` | 0 | Base of nata1 TX ring (lower) |
+| `rx_lba_1` | 128 | Base of nata1 RX ring (upper = nata0 TX) |
 
 ### 3.2 Cross-link invariant
 
@@ -53,54 +53,53 @@ tx_lba_0 == rx_lba_1 == 128
 tx_lba_1 == rx_lba_0 == 0
 ```
 
-Changing one without the other breaks the datapath. Hardware bind ioctls expose `tx_lba_start` / `rx_lba_start` per host for future non-default maps; **sim mode hard-codes the table above**.
-
 ---
 
-## 4. Physical map (byte view)
+## 4. Per-half ring layout
+
+Within each half, **slot `i`** (i = 0…7) starts at:
 
 ```text
-sim_mailbox / BRAM
-+================================================================+
-| LBA 0                                                          |
-|  +------------------+----------------------------------------+ |
-|  | nata_pkt_hdr 16B | Ethernet frame (nata1 → nata0)         | |
-|  +------------------+----------------------------------------+ |
-|  ... sectors 1..N-1 continue frame if multi-sector ...         |
-|                                                                |
-| LBA 1 … 127   (remainder of lower half — currently unused      |
-|               except as multi-sector overflow from LBA 0)      |
-+----------------------------------------------------------------+
-| LBA 128                                                        |
-|  +------------------+----------------------------------------+ |
-|  | nata_pkt_hdr 16B | Ethernet frame (nata0 → nata1)         | |
-|  +------------------+----------------------------------------+ |
-|  ... multi-sector overflow into LBA 129+ ...                   |
-|                                                                |
-| LBA 129 … 255  (remainder of upper half)                       |
-+================================================================+
+slot_lba    = base_lba + i * NATA_SLOT_SECTORS   // base_lba is 0 or 128
+slot_offset = slot_lba * 512                     // byte offset in sim_mailbox
 ```
 
-### 4.1 Queue depth
+| Slot | Lower half LBA (nata1 TX) | Upper half LBA (nata0 TX) |
+|------|---------------------------|---------------------------|
+| 0 | 0–15 | 128–143 |
+| 1 | 16–31 | 144–159 |
+| 2 | 32–47 | 160–175 |
+| 3 | 48–63 | 176–191 |
+| 4 | 64–79 | 192–207 |
+| 5 | 80–95 | 208–223 |
+| 6 | 96–111 | 224–239 |
+| 7 | 112–127 | 240–255 |
 
-**Depth = 1 logical packet per direction.**
+### 4.1 Slot byte layout (8192 bytes)
 
-- The base LBA of each half is always the sole publication point.
-- A subsequent TX overwrites header+payload at that base.
-- There is no free-running ring index, head/tail, or multi-buffering.
+| Offset | Size | Field |
+|--------|------|--------|
+| 0 | 4 | `valid` (`u32`): `0` empty, `1` published |
+| 4 | 16 | `struct nata_pkt_hdr` (magic starts at **slot+4**) |
+| 20 | `len` | Ethernet frame payload |
+| 20+len … 8191 | pad | Unused / stale |
 
-Implication: under high offered load, packets are **lost by overwrite** before the peer RX thread consumes them. TCP recovers via retransmission; UDP shows loss (see performance spec).
+### 4.2 Head / tail (software indices)
 
-### 4.2 Multi-sector frames
+| Ring | Producer (head) | Consumer (tail) | Fields |
+|------|-----------------|-----------------|--------|
+| Upper (nata0 → nata1) | nata0 TX | nata1 RX | `tx_head_0`, `tx_tail_0` |
+| Lower (nata1 → nata0) | nata1 TX | nata0 RX | `tx_head_1`, `tx_tail_1` |
 
-Frames needing 2–3 sectors occupy consecutive LBAs starting at the region base:
+- Indices are `0 … 7` (`& NATA_RING_MASK`).
+- **Empty:** slot at `tail` has `valid == 0`.
+- **Full:** slot at `head` has `valid == 1` → producer **drops** (no overwrite), increments `ring_full_drops` and `dropped_blocks`.
+- Producer: write payload+header, `smp_wmb()`, set `valid=1`, advance head.
+- Consumer: observe `valid==1`, `smp_rmb()`, read, clear `valid`, advance tail (always on poison paths too).
 
-| Direction | Base | Possible LBA span for max frame |
-|-----------|------|----------------------------------|
-| nata1 → nata0 | 0 | 0–2 |
-| nata0 → nata1 | 128 | 128–130 |
+### 4.3 Queue depth
 
-Those overflow sectors are **not** independently sequenced; they are only payload continuation for the header at the base.
+**Depth = 8 packets per direction.** Under sustained flood faster than the RX kthread, the ring fills and further TX returns `-ENOSPC` (counted). No silent overwrite of in-flight slots.
 
 ---
 
@@ -111,99 +110,27 @@ int sim_mailbox_io(struct nata_priv *priv, u64 sector, void *buf,
                    size_t len, int op);
 ```
 
-| Parameter | Semantics |
-|-----------|-----------|
-| `sector` | Starting LBA |
-| `buf` | Kernel buffer |
-| `len` | Byte length |
-| `op` | `1` = write (host→mailbox), else read (mailbox→host) |
-
-**Checks:**
-
-1. `sim_mailbox` non-NULL  
-2. `sector < 256`  
-3. `len <= 131072`  
-4. `len <= 131072 - sector*512`  
-
-**Implementation:** `memcpy` to/from `priv->sim_mailbox + sector * 512`. No DMA, no cache flushes beyond barriers used in TX/RX helpers.
-
-> Hot path TX/RX in `sim_tx_packet` / `sim_rx_one_packet` currently **bypass** `sim_mailbox_io` and `memcpy` directly for lower overhead, applying equivalent bounds checks inline.
+Generic sector R/W with bounds. Hot path TX/RX uses `nata_slot_ptr()` + direct `memcpy`.
 
 ---
 
 ## 6. Dual-port concurrency model
 
-### 6.1 Simulation
-
-- One shared virtual address space.
-- **Software lock** `priv->lock` + BH-disabled spinlock for publish/consume.
-- Two RX kthreads and softirq/xmit context coordinate via that lock and waitqueues.
-
-### 6.2 FPGA (`dual_port_ram`)
-
-- True dual-port: independent `clk_a`/`clk_b`, `we_*`, `addr_*`, `din_*`, `dout_*`.
-- Same clock domain in top-level wiring today (`clk_150mhz` both ports).
-- **No arbitration** for same-address write-write collision; design assumes hosts write **disjoint** halves for TX (A writes upper, B writes lower) in the intended operational map.
-- Read-during-write behavior: write-first register update in the always block (same-port); cross-port simultaneous access is implementation-defined classic BRAM behavior — not formally constrained in RTL comments.
-
-### 6.3 Intended hardware ownership
-
-| Port | Host | Typical writes | Typical reads |
-|------|------|----------------|---------------|
-| A | Host PC A | Upper half (its TX) | Lower half (its RX) |
-| B | Host PC B | Lower half (its TX) | Upper half (its RX) |
+Unchanged vs prior: software `spin_lock_bh` + barriers in sim; FPGA dual-port BRAM without software ring FSM (hardware path still PARTIAL).
 
 ---
 
-## 7. Address translation (RTL)
-
-From `sata_device_ip` during READ/WRITE:
-
-```text
-ram_addr = lba_addr[14:0] * 128 + dma_counter[6:0]
-```
-
-| Symbol | Meaning |
-|--------|---------|
-| `lba_addr` | 48-bit LBA parsed from Register H2D FIS (only low bits used) |
-| `* 128` | Sector → first DWORD index |
-| `dma_counter` | 0…127 within one sector transfer (simplified single-sector path in stub) |
-
-**Note:** The RTL DMA path is a **stub** that models one 512-byte sector window with a 128-beat DWORD counter. Multi-sector and full FIS data FIS sequencing are incomplete. Software sim does multi-sector correctly via byte `memcpy`.
-
----
-
-## 8. Initialization and teardown
+## 7. Initialization
 
 | Event | Behavior |
 |-------|----------|
-| Module init | `vmalloc(131072)` then `memset(..., 0, 131072)` |
-| Module exit | `vfree(sim_mailbox)` |
-| Cold boot FPGA | BRAM contents undefined until host writes; software zeros sim |
-
-Zero-filled mailbox: `magic != NATA_MAGIC` → no RX pending.
+| Module init | `vmalloc(131072)`, zero; head/tail = 0 |
+| Cold mailbox | all `valid == 0` → empty rings |
 
 ---
 
-## 9. Future map extensions (non-normative)
-
-Not implemented; reserved for later design:
-
-- Ring of N slots per direction with head/tail LBAs  
-- Control sector for credits / link MTU  
-- Separate identify/geometry metadata outside packet regions  
-- Larger than 128 KiB mailbox if FPGA BRAM budget allows  
-
-Any change to size or split **must** update:
-
-- `NATA_MAILBOX_BYTES` / sector constants  
-- Default `tx_lba_*` / `rx_lba_*`  
-- RTL `dual_port_ram` depth  
-- This document and [02-packet-format.md](02-packet-format.md)
-
----
-
-## 10. Related
+## 8. Related
 
 - [02-packet-format.md](02-packet-format.md)  
+- [04-kernel-module.md](04-kernel-module.md)  
 - [07-fpga-rtl.md](07-fpga-rtl.md)  
