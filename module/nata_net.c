@@ -17,7 +17,7 @@ static netdev_tx_t nada_xmit_0(struct sk_buff *skb, struct net_device *dev)
         return NETDEV_TX_OK;
     }
 
-    spin_lock(&priv->lock);
+    spin_lock_bh(&priv->lock);
 
     ret = sim_tx_packet(priv, skb, 1); /* 1 for dev0 (nada0) */
     if (ret == 0) {
@@ -33,7 +33,7 @@ static netdev_tx_t nada_xmit_0(struct sk_buff *skb, struct net_device *dev)
     }
 
     dev_kfree_skb(skb);
-    spin_unlock(&priv->lock);
+    spin_unlock_bh(&priv->lock);
     return NETDEV_TX_OK;
 }
 
@@ -50,7 +50,7 @@ static netdev_tx_t nada_xmit_1(struct sk_buff *skb, struct net_device *dev)
         return NETDEV_TX_OK;
     }
 
-    spin_lock(&priv->lock);
+    spin_lock_bh(&priv->lock);
 
     ret = sim_tx_packet(priv, skb, 0); /* 0 for dev1 (nada1) */
     if (ret == 0) {
@@ -66,7 +66,7 @@ static netdev_tx_t nada_xmit_1(struct sk_buff *skb, struct net_device *dev)
     }
 
     dev_kfree_skb(skb);
-    spin_unlock(&priv->lock);
+    spin_unlock_bh(&priv->lock);
     return NETDEV_TX_OK;
 }
 

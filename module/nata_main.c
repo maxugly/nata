@@ -35,7 +35,10 @@ static int nata_rx_thread_0(void *data)
         if (kthread_should_stop())
             break;
 
+        /* Share priv->lock with TX so mailbox header/payload pairs are atomic */
+        spin_lock_bh(&priv->lock);
         sim_rx_one_packet(priv, 1); /* 1 for dev0 (nada0) */
+        spin_unlock_bh(&priv->lock);
     }
     pr_info("NATA: RX thread for nada0 stopped.\n");
     return 0;
@@ -55,7 +58,9 @@ static int nata_rx_thread_1(void *data)
         if (kthread_should_stop())
             break;
 
+        spin_lock_bh(&priv->lock);
         sim_rx_one_packet(priv, 0); /* 0 for dev1 (nada1) */
+        spin_unlock_bh(&priv->lock);
     }
     pr_info("NATA: RX thread for nada1 stopped.\n");
     return 0;
@@ -81,7 +86,7 @@ static long nata_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         struct nata_ioc_status status;
         memset(&status, 0, sizeof(status));
 
-        spin_lock(&priv->lock);
+        spin_lock_bh(&priv->lock);
         status.is_bound = 0;
         status.is_sim_mode = 1;
         strncpy(status.bdev_path, "SIMULATED_MAILBOX_RAM", sizeof(status.bdev_path) - 1);
@@ -102,7 +107,7 @@ static long nata_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         status.sim_rx_packets_0 = priv->rx_packets_0;
         status.sim_tx_packets_1 = priv->tx_packets_1;
         status.sim_rx_packets_1 = priv->rx_packets_1;
-        spin_unlock(&priv->lock);
+        spin_unlock_bh(&priv->lock);
 
         if (copy_to_user((void __user *)arg, &status, sizeof(status)))
             return -EFAULT;
