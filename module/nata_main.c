@@ -35,7 +35,10 @@ static int nata_rx_thread_0(void *data)
         if (kthread_should_stop())
             break;
 
+        /* Share priv->lock with TX so mailbox header/payload pairs are atomic */
+        spin_lock_bh(&priv->lock);
         sim_rx_one_packet(priv, 1); /* 1 for dev0 (nada0) */
+        spin_unlock_bh(&priv->lock);
     }
     pr_info("NATA: RX thread for nada0 stopped.\n");
     return 0;
@@ -55,7 +58,9 @@ static int nata_rx_thread_1(void *data)
         if (kthread_should_stop())
             break;
 
+        spin_lock_bh(&priv->lock);
         sim_rx_one_packet(priv, 0); /* 0 for dev1 (nada1) */
+        spin_unlock_bh(&priv->lock);
     }
     pr_info("NATA: RX thread for nada1 stopped.\n");
     return 0;

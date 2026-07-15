@@ -1,0 +1,21 @@
+# Build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+Module.symvers
+modules.order
+*.order
+*.symvers
+
+# Editor / OS junk
+*~
+*.swp
+.DS_Store
+
+# Local patches / scratch
+patch.diff
+*.orig
+*.rej

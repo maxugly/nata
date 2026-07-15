@@ -1,20 +1,31 @@
 #include <linux/slab.h>
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
+#include <linux/etherdevice.h>
+#include <asm/barrier.h>
 #include "nata.h"
 
-/* * Memory-based simulated block I/O helper.
+/* 128 KB simulated dual-port mailbox = 256 sectors of 512 bytes */
+#define NATA_MAILBOX_BYTES  131072
+#define NATA_MAILBOX_SECTORS    (NATA_MAILBOX_BYTES / 512)
+
+/*
+ * Memory-based simulated block I/O helper.
  * Simulates writing/reading sectors to the FPGA SRAM dual-port RAM mailbox.
  */
 int sim_mailbox_io(struct nata_priv *priv, u64 sector, void *buf, size_t len, int op)
 {
-    u64 offset = sector * 512;
+    u64 offset;
 
     if (!priv->sim_mailbox)
         return -ENODEV;
 
-    /* Ensure we do not access out-of-bounds memory (128 KB limit) */
-    if (offset + len > 131072)
+    /* Sector-based check avoids overflow in sector * 512 */
+    if (sector >= NATA_MAILBOX_SECTORS || len > NATA_MAILBOX_BYTES)
+        return -EINVAL;
+
+    offset = sector * 512;
+    if (len > NATA_MAILBOX_BYTES - offset)
         return -EINVAL;
 
     if (op == 1) {
@@ -27,34 +38,39 @@ int sim_mailbox_io(struct nata_priv *priv, u64 sector, void *buf, size_t len, in
     return 0;
 }
 
-/* * Check if there is a new packet waiting to be received.
+/*
+ * Check if there is a new packet waiting to be received.
  * Returns 1 if a packet with a new sequence number is present, 0 otherwise.
  */
 int check_rx_pending(struct nata_priv *priv, int is_dev0)
 {
-    u64 offset = (is_dev0 ? priv->rx_lba_0 : priv->rx_lba_1) * 512;
+    u64 sector = is_dev0 ? priv->rx_lba_0 : priv->rx_lba_1;
     struct nata_pkt_hdr *hdr;
 
-    if (!priv->sim_mailbox)
+    if (!priv->sim_mailbox || sector >= NATA_MAILBOX_SECTORS)
         return 0;
 
-    hdr = (struct nata_pkt_hdr *)(priv->sim_mailbox + offset);
-    return (hdr->magic == NATA_MAGIC && 
-            hdr->seq != (is_dev0 ? priv->last_rx_seq_0 : priv->last_rx_seq_1));
+    hdr = (struct nata_pkt_hdr *)(priv->sim_mailbox + sector * 512);
+    return (hdr->magic == NATA_MAGIC &&
+        hdr->seq != (is_dev0 ? priv->last_rx_seq_0 : priv->last_rx_seq_1));
 }
 
-/* * Simulated transmit function.
+/*
+ * Simulated transmit function.
  * Packs the network frame into a NATA sector packet and writes it to memory.
+ *
+ * Publication order: payload first, then smp_wmb(), then header. Readers that
+ * observe a new seq/magic are guaranteed to see the matching payload.
+ * Caller must hold priv->lock (taken in the xmit path).
  */
 int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0)
 {
     struct nata_pkt_hdr hdr;
-    void *buf;
     size_t total_len;
     size_t sectors_needed;
     u64 sector = is_dev0 ? priv->tx_lba_0 : priv->tx_lba_1;
+    u64 offset;
     u32 *tx_seq = is_dev0 ? &priv->tx_seq_0 : &priv->tx_seq_1;
-    int err;
 
     if (!priv->sim_mailbox)
         return -ENODEV;
@@ -68,96 +84,90 @@ int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0)
     total_len = sizeof(hdr) + skb->len;
     sectors_needed = (total_len + 511) / 512;
 
-    /* Use GFP_ATOMIC since this is called from the netdev start_xmit atomic context */
-    buf = kzalloc(sectors_needed * 512, GFP_ATOMIC);
-    if (!buf)
-        return -ENOMEM;
+    /* Validate in sector units to avoid integer overflow on offset math */
+    if (sector >= NATA_MAILBOX_SECTORS ||
+        sectors_needed > NATA_MAILBOX_SECTORS ||
+        sector + sectors_needed > NATA_MAILBOX_SECTORS)
+        return -EINVAL;
 
-    memcpy(buf, &hdr, sizeof(hdr));
-    memcpy(buf + sizeof(hdr), skb->data, skb->len);
+    offset = sector * 512;
 
-    /* Write packet directly to simulated memory space */
-    err = sim_mailbox_io(priv, sector, buf, sectors_needed * 512, 1);
+    /* Write payload first, barrier, then publish via header */
+    memcpy(priv->sim_mailbox + offset + sizeof(hdr), skb->data, skb->len);
+    smp_wmb();
+    memcpy(priv->sim_mailbox + offset, &hdr, sizeof(hdr));
 
-    kfree(buf);
-    return err;
+    return 0;
 }
 
-/* * Simulated receive function.
+/*
+ * Simulated receive function.
  * Reads the packet from simulated memory, unpacks it, and injects it into the network stack.
+ *
+ * On any dropped/invalid entry, last_rx_seq is advanced so the RX thread does not
+ * spin forever on a bad mailbox slot.
  */
 int sim_rx_one_packet(struct nata_priv *priv, int is_dev0)
 {
     struct nata_pkt_hdr hdr;
     struct sk_buff *skb;
-    void *buf;
-    int err;
     u64 sector = is_dev0 ? priv->rx_lba_0 : priv->rx_lba_1;
+    u64 offset;
     struct net_device *netdev = is_dev0 ? priv->netdev0 : priv->netdev1;
     u32 *last_rx_seq = is_dev0 ? &priv->last_rx_seq_0 : &priv->last_rx_seq_1;
     u64 *rx_packets = is_dev0 ? &priv->rx_packets_0 : &priv->rx_packets_1;
     u64 *rx_bytes = is_dev0 ? &priv->rx_bytes_0 : &priv->rx_bytes_1;
+    size_t total_len;
+    size_t sectors_needed;
 
-    buf = kzalloc(512, GFP_KERNEL);
-    if (!buf)
-        return -ENOMEM;
+    if (!priv->sim_mailbox)
+        return -ENODEV;
 
-    err = sim_mailbox_io(priv, sector, buf, 512, 0);
-    if (err) {
-        kfree(buf);
-        return err;
-    }
+    if (sector >= NATA_MAILBOX_SECTORS)
+        return -EINVAL;
 
-    memcpy(&hdr, buf, sizeof(hdr));
-    if (hdr.magic != NATA_MAGIC || hdr.seq == *last_rx_seq) {
-        kfree(buf);
+    offset = sector * 512;
+
+    /* Read header directly from simulated BRAM */
+    memcpy(&hdr, priv->sim_mailbox + offset, sizeof(hdr));
+
+    if (hdr.magic != NATA_MAGIC || hdr.seq == *last_rx_seq)
         return 0; /* No new packet */
-    }
 
+    /*
+     * eth_type_trans() pulls ETH_HLEN bytes; frames smaller than that panic.
+     * Consume the sequence so a bad entry cannot busy-loop the RX thread.
+     */
     if (hdr.len > ETH_FRAME_LEN || hdr.len < ETH_HLEN) {
         priv->dropped_blocks++;
         *last_rx_seq = hdr.seq;
-        kfree(buf);
         return -EINVAL;
     }
+
+    total_len = sizeof(hdr) + hdr.len;
+    sectors_needed = (total_len + 511) / 512;
+
+    if (sectors_needed > NATA_MAILBOX_SECTORS ||
+        sector + sectors_needed > NATA_MAILBOX_SECTORS) {
+        priv->dropped_blocks++;
+        *last_rx_seq = hdr.seq;
+        return -EINVAL;
     }
 
     /* Allocate skb for receiving */
     skb = dev_alloc_skb(hdr.len + 2);
     if (!skb) {
         priv->dropped_blocks++;
-        kfree(buf);
+        *last_rx_seq = hdr.seq;
         return -ENOMEM;
     }
     skb_reserve(skb, 2); /* Align IP header on 16-byte boundary */
 
-    if (hdr.len <= 496) {
-        /* Entire packet fits in the first sector */
-        memcpy(skb_put(skb, hdr.len), buf + sizeof(hdr), hdr.len);
-    } else {
-        /* Read remaining sectors */
-        size_t total_len = sizeof(hdr) + hdr.len;
-        size_t sectors_needed = (total_len + 511) / 512;
-        void *large_buf = kzalloc(sectors_needed * 512, GFP_KERNEL);
-        if (!large_buf) {
-            dev_kfree_skb(skb);
-            kfree(buf);
-            return -ENOMEM;
-        }
+    /* Pair with TX smp_wmb(): payload is visible after a valid new header */
+    smp_rmb();
 
-        err = sim_mailbox_io(priv, sector, large_buf, sectors_needed * 512, 0);
-        if (err) {
-            dev_kfree_skb(skb);
-            kfree(large_buf);
-            kfree(buf);
-            return err;
-        }
-
-        memcpy(skb_put(skb, hdr.len), large_buf + sizeof(hdr), hdr.len);
-        kfree(large_buf);
-    }
-
-    kfree(buf);
+    /* Copy packet data directly from simulated memory space */
+    memcpy(skb_put(skb, hdr.len), priv->sim_mailbox + offset + sizeof(hdr), hdr.len);
 
     /* Inject packet into network stack */
     skb->dev = netdev;
