@@ -113,7 +113,7 @@ When the change touches a layer, run what exists:
 | Latency | `ip netns exec nata-a ping -c 50 …` |
 | Bandwidth | `iperf3` server in `nata-b`, client in `nata-a` — update `08-performance.md` if results shift **>15%** or design changes |
 | Control | `./tools/natactl status` with module loaded |
-| RTL sim | `cd firmware/sim && iverilog -o nata_tb.vvp -g2012 nata_tb.v xilinx_sim_stubs.v ../rtl/*.v && vvp nata_tb.vvp` (or `make -C firmware/sim`) |
+| RTL sim | Require `iverilog` + `vvp` on `PATH` (any distro; see `firmware/sim/AGENTS.md`). Then: `make -C firmware/sim` or `cd firmware/sim && iverilog -o nata_tb.vvp -g2012 nata_tb.v xilinx_sim_stubs.v ../rtl/*.v && vvp nata_tb.vvp` |
 | Docs | Spec numbers match code constants (`NATA_MAGIC`, mailbox size, LBA bases, ioctl structs) |
 
 If you cannot run root netns tests, say so; do not invent pass results.

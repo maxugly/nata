@@ -51,7 +51,41 @@ Simulation-only harnesses that exercise `nata_top` (and eventually lower modules
 
 ## How to run
 
-**Prerequisite:** Icarus Verilog (`iverilog` + `vvp`). Example installs: `sudo apt install -y iverilog` or `brew install icarus-verilog`.
+### Prerequisite (distro-agnostic)
+
+Need **Icarus Verilog** with both binaries on `PATH`:
+
+| Binary | Role |
+|--------|------|
+| `iverilog` | Compile elaborator |
+| `vvp` | Simulation runtime |
+
+**Check (works on any OS/package manager):**
+
+```bash
+command -v iverilog && iverilog -V
+command -v vvp && vvp -V
+```
+
+Both must print a version. If either is missing, install the package that provides those tools — package **names** differ by ecosystem; the **requirement** does not.
+
+| Ecosystem | Typical package name | Example install (illustrative only) |
+|-----------|----------------------|-------------------------------------|
+| Debian / Ubuntu / derivatives | `iverilog` | `sudo apt install iverilog` |
+| Fedora / RHEL / CentOS Stream | `iverilog` | `sudo dnf install iverilog` |
+| Arch / Manjaro | `iverilog` | `sudo pacman -S iverilog` |
+| openSUSE | `iverilog` | `sudo zypper install iverilog` |
+| Alpine | `iverilog` | `sudo apk add iverilog` |
+| Homebrew (macOS or Linuxbrew) | `icarus-verilog` | `brew install icarus-verilog` |
+| Nix | `iverilog` | `nix-shell -p iverilog` |
+| Guix | `iverilog` | `guix install iverilog` |
+| From source | — | Build [steveicarus/iverilog](https://github.com/steveicarus/iverilog); ensure `iverilog` and `vvp` land on `PATH` |
+
+Prefer whatever your environment already uses. Do not treat any single distro’s package manager as mandatory.
+
+Override tool paths if needed: `make IVERILOG=/path/to/iverilog VVP=/path/to/vvp`.
+
+### Commands
 
 From `firmware/sim/`:
 

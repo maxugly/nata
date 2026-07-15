@@ -229,9 +229,11 @@ Does **not** drive full SATA OOB or FIS byte streams.
 
 ### 7.1 Running the simulation
 
-**Tool:** Icarus Verilog (`iverilog` + `vvp`). From `firmware/sim/`:
+**Tool:** Icarus Verilog — need `iverilog` and `vvp` on `PATH` (any host package manager; package may be named `iverilog` or `icarus-verilog`). Distro-agnostic check and install table: [firmware/sim/AGENTS.md](../../firmware/sim/AGENTS.md#prerequisite-distro-agnostic).
 
 ```bash
+command -v iverilog && command -v vvp   # both required
+cd firmware/sim
 make
 # equivalent:
 iverilog -o nata_tb.vvp -g2012 \
@@ -240,7 +242,7 @@ iverilog -o nata_tb.vvp -g2012 \
 vvp nata_tb.vvp
 ```
 
-**What this validates (as-built):** the RTL hierarchy elaborates; forced `phy_ready` lights both link LEDs; forced `write_event_a_to_b` drives `led_activity_a` (structural AN/activity wiring). Optional waves: `gtkwave nata_tb.vcd`.
+**What this validates (as-built):** the RTL hierarchy elaborates; forced `phy_ready` lights both link LEDs; forced `write_event_a_to_b` drives `led_activity_a` (structural AN/activity wiring). Optional waves: `gtkwave nata_tb.vcd` (viewer is optional and also distro-packaged under various names).
 
 **What this does not validate:** full FIS packet streams, DATA FIS DMA, OOB/COMRESET, real SERDES, multi-sector mailbox transfers, or host-side Asynchronous Notification compliance. Those need a separate future testbench.
 
