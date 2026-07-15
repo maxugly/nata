@@ -167,7 +167,33 @@ nata: Operating in 100% Virtual Loopback Mode (no hardware required).
 NATA: Registered virtual interfaces nata0 and nata1 successfully.
 ```
 
-### 4. Unload
+### 4. Benchmark (simulation)
+
+With namespaces up (`nata-a` = `192.168.42.1`, `nata-b` = `192.168.42.2`):
+
+```bash
+# Latency
+sudo ip netns exec nata-a ping -c 50 -i 0.2 192.168.42.2
+
+# Bandwidth (server in nata-b, client in nata-a)
+sudo ip netns exec nata-b iperf3 -s
+sudo ip netns exec nata-a iperf3 -c 192.168.42.2 -t 10
+sudo ip netns exec nata-a iperf3 -c 192.168.42.2 -t 10 -R   # reverse
+sudo ip netns exec nata-a iperf3 -c 192.168.42.2 -u -b 0 -t 10
+```
+
+**Measured results** (2026-07-15, Linux 6.8.0, AMD EPYC-Milan, 8 vCPU; in-kernel mailbox simulation — not SATA hardware):
+
+| Metric | Direction | Result |
+|--------|-----------|--------|
+| **ICMP RTT** | `nata-a` → `nata-b` | min **0.072 ms** / avg **0.151 ms** / max **0.453 ms** (50 pkts, 0% loss) |
+| **TCP throughput** | `nata-a` → `nata-b` | **~600 Mbit/s** sender / **~587 Mbit/s** receiver (10 s) |
+| **TCP throughput** | `nata-b` → `nata-a` (iperf3 `-R`) | **~609 Mbit/s** sender / **~608 Mbit/s** receiver (10 s) |
+| **UDP goodput** | `nata-a` → `nata-b` | **~2.23 Gbit/s** receiver (**~4.04 Gbit/s** offered; ~45% loss at unlimited rate) |
+
+These numbers reflect software encapsulation and the shared mailbox path on one host. Hardware SATA Gen1/Gen2 PHY rates and FIS overhead will differ; re-measure on real bridge silicon.
+
+### 5. Unload
 
 ```bash
 sudo ./scripts/nata-ns-down.sh
@@ -222,7 +248,7 @@ When device binding is implemented, the same module will attach to a real target
 NATA is for environments where the only free high-speed interconnect is a SATA port, or where the research goal is storage-bus packet transport. It is complementary to Ethernet, not a general replacement for datacenter NICs.
 
 **What is the effective throughput?**  
-The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS overhead, interrupt/notification path, and CPU cost of encapsulation. Measure with standard tools (`iperf3`, `ping`, kernel stats) on your target once the hardware path is live; simulation measures software overhead only.
+The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS overhead, interrupt/notification path, and CPU cost of encapsulation. In **simulation** (same-host mailbox), expect roughly **~0.6 Gbit/s TCP** and **~2 Gbit/s UDP goodput** with sub-millisecond RTT — see [Benchmark (simulation)](#4-benchmark-simulation). Re-measure with `iperf3` / `ping` on real hardware once the bridge path is live.
 
 **Can I boot over NATA?**  
 Not supported. The module assumes a running kernel and registers virtual netdevs; it is not an iSCSI target or PXE path.
