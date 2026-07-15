@@ -14,7 +14,7 @@ The result is a full L2/L3-capable interface whose physical medium is the storag
 |-------|--------|
 | **Linux simulation mode** | Implemented — dual virtual NICs share an in-kernel mailbox (`target_ata_port=-1`) |
 | **Kernel module** | `module/` — net + block helpers, control device `/dev/nata_ctl` |
-| **User tools** | `tools/natactl`, `scripts/nata-up.sh` |
+| **User tools** | `tools/natactl`, `scripts/nata-ns-up.sh` (recommended sim), `scripts/nata-up.sh` |
 | **FPGA RTL** | `firmware/rtl/` — dual-port RAM, SATA device IP stubs, top-level |
 | **PCB / schematic** | `hardware/` — KiCad bridge design |
 | **Hardware bring-up** | In progress — dual SATA device PHY + Asynchronous Notification path |
@@ -109,33 +109,54 @@ make
 
 Produces `nata.ko` against `/lib/modules/$(uname -r)/build`.
 
-### 2. Load and configure
+### 2. Load and configure (network namespaces — required for same-host ping)
 
-From the repository root (as root):
+Both virtual NICs register in one kernel. If `nata0` and `nata1` stay in the
+default network namespace with `192.168.42.1` and `192.168.42.2` assigned there,
+the stack treats both addresses as **local**. Frames still cross the simulated
+mailbox (module TX/RX counters climb), but ARP and IP do not complete between
+“two hosts” that are really one. Split them with network namespaces:
 
 ```bash
-sudo ./scripts/nata-up.sh
+sudo ./scripts/nata-ns-up.sh
 ```
 
-This loads the module in simulation mode (`target_ata_port=-1`), waits for `nata0` and `nata1`, and assigns default addresses (`10.0.0.1/24` and `10.0.0.2/24`).
+That script:
+
+1. Loads `nata.ko` in simulation mode (`target_ata_port=-1`)
+2. Creates netns `nata-a` and `nata-b`
+3. Moves `nata0` → `nata-a`, `nata1` → `nata-b`
+4. Assigns `192.168.42.1/24` and `192.168.42.2/24`
+5. Runs `ping -c 3` from `nata-a` to `192.168.42.2`
 
 Manual equivalent:
 
 ```bash
 sudo insmod module/nata.ko target_ata_port=-1
-sudo ip addr add 192.168.42.1/24 dev nata0
-sudo ip link set nata0 up
-# peer side of the loopback pair:
-sudo ip addr add 192.168.42.2/24 dev nata1
-sudo ip link set nata1 up
+sudo ip netns add nata-a
+sudo ip netns add nata-b
+sudo ip link set nata0 netns nata-a
+sudo ip link set nata1 netns nata-b
+sudo ip netns exec nata-a ip addr add 192.168.42.1/24 dev nata0
+sudo ip netns exec nata-a ip link set nata0 up
+sudo ip netns exec nata-b ip addr add 192.168.42.2/24 dev nata1
+sudo ip netns exec nata-b ip link set nata1 up
+sudo ip netns exec nata-a ping -c 3 192.168.42.2
 ```
+
+Override defaults if needed: `NATA_ADDR_A`, `NATA_ADDR_B`, `NATA_PEER_B`, `NATA_NS_A`, `NATA_NS_B`.
+
+Same-namespace bring-up (`sudo ./scripts/nata-up.sh`) only loads the module and
+configures both NICs in the root netns — useful for driver smoke tests, not for
+end-to-end IP between the pair.
 
 ### 3. Verify
 
 ```bash
 dmesg | grep -i nata
-ip link show nata0
-ping -c 3 192.168.42.2   # from the nata0 address toward nata1
+sudo ip netns exec nata-a ip link show nata0
+sudo ip netns exec nata-a ip neigh show dev nata0
+sudo ip netns exec nata-a ping -c 3 192.168.42.2
 ```
 
 Example kernel log:
@@ -143,16 +164,17 @@ Example kernel log:
 ```text
 nata: Initializing Software-Defined Simulation Environment...
 nata: Operating in 100% Virtual Loopback Mode (no hardware required).
-nata0: Virtual interface 'nata0' created successfully.
+NATA: Registered virtual interfaces nata0 and nata1 successfully.
 ```
 
 ### 4. Unload
 
 ```bash
-sudo ip link set nata0 down
-sudo ip link set nata1 down
-sudo rmmod nata
+sudo ./scripts/nata-ns-down.sh
 ```
+
+Or manually: move interfaces back to the root netns, delete the namespaces, then
+`rmmod nata`.
 
 ---
 

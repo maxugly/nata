@@ -172,8 +172,14 @@ int sim_rx_one_packet(struct nata_priv *priv, int is_dev0)
     /* Inject packet into network stack */
     skb->dev = netdev;
     skb->protocol = eth_type_trans(skb, netdev);
-    netif_rx(skb);
+    if (netif_rx(skb) == NET_RX_DROP) {
+        priv->dropped_blocks++;
+        *last_rx_seq = hdr.seq;
+        return -ENOMEM;
+    }
 
+    netdev->stats.rx_packets++;
+    netdev->stats.rx_bytes += hdr.len;
     *rx_packets += 1;
     *rx_bytes += hdr.len;
     *last_rx_seq = hdr.seq;
