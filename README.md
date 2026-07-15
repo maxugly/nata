@@ -77,7 +77,7 @@ firmware/rtl/     Verilog sources (dual-port RAM, device IP, top)
 firmware/sim/     Testbench
 firmware/constraints/  FPGA pin constraints (Artix-7 example)
 hardware/         KiCad schematic and PCB for the bridge
-docs/             Whitepaper and reference photos
+docs/             Whitepaper
 ```
 
 ---
