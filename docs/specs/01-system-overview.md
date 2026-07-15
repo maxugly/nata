@@ -151,7 +151,7 @@ Module and userspace share `module/nata.h` for ioctl layouts; any ABI change to 
 
 1. **Finite ring depth (32)** — under flood, TX returns `NETDEV_TX_BUSY` and stops the queue instead of overwriting; still not infinite buffering or credit-based flow control.
 2. **Same-host default netns** — assigning both IPs in one namespace fails ARP/IP locality checks; netns isolation is required for end-to-end IP tests.
-3. **TCP retransmits under extreme load** may still occur; deeper rings + backpressure cut them vs depth-8 drop path — see [08-performance.md](08-performance.md).
+3. **TCP retransmits under flood** measured **0** after 32-slot + `NETDEV_TX_BUSY` (was ~5e4 at depth 8); still finite buffering, not credit-based flow control — see [08-performance.md](08-performance.md).
 4. **No MTU customization** — standard Ethernet frame bounds enforced on RX (`ETH_HLEN` … `ETH_FRAME_LEN`); default netdev MTU from `alloc_etherdev`.
 5. **Hardware path is not production-ready** — RTL is architectural scaffolding, not a verified SATA device IP.
 

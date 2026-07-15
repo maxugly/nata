@@ -17,6 +17,7 @@ Root-operated shell helpers to load/unload the simulation module and configure i
 | `nata-ns-up.sh` | Load sim module, create `nata-a`/`nata-b`, move NICs, address, ping check |
 | `nata-ns-down.sh` | Move NICs back, delete netns, `rmmod` |
 | `nata-up.sh` | Same-namespace smoke config only (not a valid dual-host IP test) |
+| `nata-bench-once.sh` | Root one-shot: up → ping/iperf3 TCP+UDP → `natactl status` → down; tees `/tmp/nata-bench-results.txt` |
 
 Shell: portable `sh`, `set -e`, require root.
 

@@ -184,15 +184,17 @@ sudo ip netns exec nata-a iperf3 -c 192.168.42.2 -t 10 -R   # reverse
 sudo ip netns exec nata-a iperf3 -c 192.168.42.2 -u -b 0 -t 10
 ```
 
-**Measured results** (2026-07-15, Linux 6.8.0, AMD EPYC-Milan, 8 vCPU; **32-slot ring + TX backpressure** sim mailbox — not SATA hardware):
+**Measured results** (2026-07-15, Linux 6.8.0-134, **32-slot ring + NAPI + TX backpressure** sim mailbox — not SATA hardware):
 
 | Metric | Direction | Result |
 |--------|-----------|--------|
-| **ICMP RTT** | `nata-a` → `nata-b` | see [08-performance.md](docs/specs/08-performance.md) after remeasure |
-| **TCP throughput** | either direction | see [08-performance.md](docs/specs/08-performance.md) |
-| **UDP goodput** | `nata-a` → `nata-b` | see [08-performance.md](docs/specs/08-performance.md) |
+| **ICMP RTT** | `nata-a` → `nata-b` | min **0.023 ms** / avg **0.037 ms** / max **0.057 ms** (50 pkts, 0% loss) |
+| **TCP throughput** | `nata-a` → `nata-b` | **~7.26 Gbit/s** (10 s; **0** retransmits) |
+| **TCP throughput** | `nata-b` → `nata-a` (iperf3 `-R`) | **~8.02 Gbit/s** (10 s; **0** retransmits) |
+| **UDP goodput** | `nata-a` → `nata-b` | **~2.33 Gbit/s** receiver (**~0.012%** loss at unlimited `-b 0`) |
+| **Ring pressure** | after full suite | `ring_full_drops` **0**, `dropped_blocks` **0** |
 
-Path is **32-slot rings + per-netdev NAPI + `NETDEV_TX_BUSY`**. Earlier same-day baselines: single-slot kthread ~0.6 Gbit/s TCP; 8-slot NAPI ~4.4–4.8 Gbit/s TCP with ~5e4 retransmits — see [docs/specs/08-performance.md](docs/specs/08-performance.md). Hardware SATA rates will differ again.
+Path is **32-slot rings + per-netdev NAPI + `NETDEV_TX_BUSY`**. Earlier same-day baselines: single-slot kthread ~0.6 Gbit/s TCP; 8-slot NAPI ~4.4–4.8 Gbit/s TCP with ~5e4 retransmits — see [docs/specs/08-performance.md](docs/specs/08-performance.md). One-shot remeasure: `sudo ./scripts/nata-bench-once.sh`. Hardware SATA rates will differ again.
 
 ### 5. Unload
 
@@ -249,7 +251,7 @@ When device binding is implemented, the same module will attach to a real target
 NATA is for environments where the only free high-speed interconnect is a SATA port, or where the research goal is storage-bus packet transport. It is complementary to Ethernet, not a general replacement for datacenter NICs.
 
 **What is the effective throughput?**  
-The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS overhead, interrupt/notification path, and CPU cost of encapsulation. In **simulation** (same-host 32-slot mailbox rings + NAPI RX + TX backpressure), expect multi-Gbit/s TCP and sub-millisecond RTT — see [Benchmark (simulation)](#4-benchmark-simulation) and [08-performance.md](docs/specs/08-performance.md). Re-measure with `iperf3` / `ping` on real hardware once the bridge path is live.
+The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS overhead, interrupt/notification path, and CPU cost of encapsulation. In **simulation** (same-host 32-slot mailbox rings + NAPI RX + TX backpressure), expect roughly **~7–8 Gbit/s TCP** with **0 retransmits** under the lab flood and sub-millisecond RTT — see [Benchmark (simulation)](#4-benchmark-simulation). Re-measure with `iperf3` / `ping` on real hardware once the bridge path is live.
 
 **Can I boot over NATA?**  
 Not supported. The module assumes a running kernel and registers virtual netdevs; it is not an iSCSI target or PXE path.
