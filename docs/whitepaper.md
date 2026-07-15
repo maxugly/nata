@@ -77,10 +77,10 @@ Bash
 sudo insmod nata.ko
 
 Bash  
-sudo ip link set nada0 up
+sudo ip link set nata0 up
 
 Bash  
-sudo ip addr add 10.0.0.1/24 dev nada0
+sudo ip addr add 10.0.0.1/24 dev nata0
 
 Once the routes are set, the network traffic seamlessly drops beneath the abstraction layer, plunging through the SCSI subsystem, out the AHCI controller, and across the $3\\text{ GHz}$ Twinax differential pairs.  
 It is a masterpiece of protocol abuse.

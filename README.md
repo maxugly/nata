@@ -1,18 +1,8 @@
 # NATA: Not Advanced Technology Attachment
 
-```text
-    _   _    _  _____  _
-   | \ | |  / \|_   _|/ \
-   |  \| | / _ \ | | / _ \
-   | |\  |/ ___ \| |/ ___ \
-   |_| \_/_/   \_\_/_/   \_\
+**NATA** is a point-to-point networking stack that carries Ethernet/IP frames over a SATA link by presenting each host with a synthetic block device and mapping packets onto Logical Block Address (LBA) regions.
 
-   SATA 3.0 dual-target bridge · IP over LBA · Linux
-```
-
-**NATA** (pronounced *Not-uh* or *Nada*) is a point-to-point networking stack that carries Ethernet/IP frames over a SATA link by presenting each host with a synthetic block device and mapping packets onto Logical Block Address (LBA) regions.
-
-A dual-target FPGA bridge sits between two host SATA controllers. Each host believes it is talking to a drive. The bridge terminates Host-to-Device FIS traffic on both sides, emulates device responses, and exchanges payload through shared dual-port memory (the mailbox). A Linux kernel module registers virtual NICs (`nada0` / `nada1`), encapsulates frames into fixed-size block writes, and rehydrates frames on the receive path.
+A dual-target FPGA bridge sits between two host SATA controllers. Each host believes it is talking to a drive. The bridge terminates Host-to-Device FIS traffic on both sides, emulates device responses, and exchanges payload through shared dual-port memory (the mailbox). A Linux kernel module registers virtual NICs (`nata0` / `nata1`), encapsulates frames into fixed-size block writes, and rehydrates frames on the receive path.
 
 The result is a full L2/L3-capable interface whose physical medium is the storage bus rather than a conventional Ethernet PHY.
 
@@ -58,8 +48,8 @@ Two host AHCI controllers never speak Host-to-Host. The bridge appears as a SATA
 
 | Region | LBA range (approx.) | Role |
 |--------|---------------------|------|
-| Lower 64 KiB | 0–127 | TX for `nada1` / RX for `nada0` |
-| Upper 64 KiB | 128–255 | TX for `nada0` / RX for `nada1` |
+| Lower 64 KiB | 0–127 | TX for `nata1` / RX for `nata0` |
+| Upper 64 KiB | 128–255 | TX for `nata0` / RX for `nata1` |
 
 Each packet is prefixed with a small NATA header (`magic`, `len`, `seq`) and padded to 512-byte sectors. Transmit publishes payload then header (with memory barriers); receive validates length (`ETH_HLEN` … `ETH_FRAME_LEN`) and sequence before injecting into the network stack via `netif_rx`.
 
@@ -73,7 +63,7 @@ Relative to a conventional 1 GbE link on copper pair cabling:
 
 * **Point-to-point collision domain** — SATA is a dedicated link between host and device. There is no shared CSMA/CD domain; collision rate on the wire is not a factor.
 * **Full-duplex at link rate** — Each direction uses its own differential pair at SATA Gen1/Gen2 rates (up to 3.0 Gbps signaling on the PHY; effective payload rate is lower after FIS, sector, and software overhead).
-* **Security through absolute obscurity** — Standard Ethernet capture tools do not attach to a SATA device path. A passive observer on the cable sees storage FIS and block traffic, not an Ethernet frame stream. (This is not a cryptographic claim; it is a property of the medium.)
+* **Security through obscurity** — On the wire the medium is SATA FIS and block I/O, not Ethernet. Commodity packet sniffers do not attach to that path; use a SATA analyzer or capture on `nata0`/`nata1` at the host.
 
 ---
 
@@ -127,25 +117,25 @@ From the repository root (as root):
 sudo ./scripts/nata-up.sh
 ```
 
-This loads the module in simulation mode (`target_ata_port=-1`), waits for `nada0` and `nada1`, and assigns default addresses (`10.0.0.1/24` and `10.0.0.2/24`).
+This loads the module in simulation mode (`target_ata_port=-1`), waits for `nata0` and `nata1`, and assigns default addresses (`10.0.0.1/24` and `10.0.0.2/24`).
 
 Manual equivalent:
 
 ```bash
 sudo insmod module/nata.ko target_ata_port=-1
-sudo ip addr add 192.168.42.1/24 dev nada0
-sudo ip link set nada0 up
+sudo ip addr add 192.168.42.1/24 dev nata0
+sudo ip link set nata0 up
 # peer side of the loopback pair:
-sudo ip addr add 192.168.42.2/24 dev nada1
-sudo ip link set nada1 up
+sudo ip addr add 192.168.42.2/24 dev nata1
+sudo ip link set nata1 up
 ```
 
 ### 3. Verify
 
 ```bash
 dmesg | grep -i nata
-ip link show nada0
-ping -c 3 192.168.42.2   # from the nada0 address toward nada1
+ip link show nata0
+ping -c 3 192.168.42.2   # from the nata0 address toward nata1
 ```
 
 Example kernel log:
@@ -153,14 +143,14 @@ Example kernel log:
 ```text
 nata: Initializing Software-Defined Simulation Environment...
 nata: Operating in 100% Virtual Loopback Mode (no hardware required).
-nata0: Virtual interface 'nada0' created successfully.
+nata0: Virtual interface 'nata0' created successfully.
 ```
 
 ### 4. Unload
 
 ```bash
-sudo ip link set nada0 down
-sudo ip link set nada1 down
+sudo ip link set nata0 down
+sudo ip link set nata1 down
 sudo rmmod nata
 ```
 
@@ -183,7 +173,7 @@ Still observe ordinary lab practice:
 
 * Provide a solid **common ground** between the bridge board and each host chassis (or a single ground reference for the bench) so shield and logic reference potentials stay controlled.
 * Do **not** rely on “floating” or deliberately ungrounded supplies as a design feature.
-* Use the FPGA board’s specified I/O and PHY supply rails; do not power the bridge from improvised ATX paperclip jumpers in production or long-running setups.
+* Use only the I/O and PHY supply rails specified by the FPGA board design.
 * Keep SATA data cables short and undamaged; treat the bridge as a high-speed digital system, not a passive crossover.
 
 Electrical and FIS-level motivation for the middleman (why a direct host–host cable fails link init) is documented in [docs/whitepaper.md](docs/whitepaper.md).
@@ -216,7 +206,7 @@ The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS o
 Not supported. The module assumes a running kernel and registers virtual netdevs; it is not an iSCSI target or PXE path.
 
 **Is capture with Wireshark possible?**  
-On the virtual interfaces, yes — `nada0`/`nada1` are normal Linux netdevs. On the physical SATA cable, ordinary Ethernet sniffers do not apply; specialized SATA analyzers would see block traffic.
+On the virtual interfaces, yes — `nata0`/`nata1` are normal Linux netdevs. On the physical SATA cable, ordinary Ethernet sniffers do not apply; specialized SATA analyzers would see block traffic.
 
 **Is this safe for production storage controllers?**  
 Treat it as experimental. Simulation mode never touches real disks. Hardware mode requires a dedicated bridge that emulates devices; do not point experimental firmware at disks holding data you care about.
@@ -234,4 +224,4 @@ Treat it as experimental. Simulation mode never touches real disks. Hardware mod
 
 ## License
 
-Licensed under the **NADA License**: You get *nothing*, it guarantees *nothing*.
+Licensed under the **NATA License**: You get *nothing*, it guarantees *nothing*.

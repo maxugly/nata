@@ -27,28 +27,28 @@ fi
 echo "Waiting 1 second for virtual devices to register..."
 sleep 1
 
-# Check for existence of nada0 and nada1 interfaces
-if [ ! -d "/sys/class/net/nada0" ] || [ ! -d "/sys/class/net/nada1" ]; then
-    echo "Error: nada0 or nada1 interfaces failed to appear." >&2
+# Check for existence of nata0 and nata1 interfaces
+if [ ! -d "/sys/class/net/nata0" ] || [ ! -d "/sys/class/net/nata1" ]; then
+    echo "Error: nata0 or nata1 interfaces failed to appear." >&2
     exit 1
 fi
 
 # Assign IP addresses
-echo "Configuring nada0 (10.0.0.1/24)..."
-ip addr flush dev nada0 2>/dev/null || true
-ip addr add 10.0.0.1/24 dev nada0
+echo "Configuring nata0 (10.0.0.1/24)..."
+ip addr flush dev nata0 2>/dev/null || true
+ip addr add 10.0.0.1/24 dev nata0
 
-echo "Configuring nada1 (10.0.0.2/24)..."
-ip addr flush dev nada1 2>/dev/null || true
-ip addr add 10.0.0.2/24 dev nada1
+echo "Configuring nata1 (10.0.0.2/24)..."
+ip addr flush dev nata1 2>/dev/null || true
+ip addr add 10.0.0.2/24 dev nata1
 
 # Bring interfaces up
 echo "Bringing up virtual interfaces..."
-ip link set nada0 up
-ip link set nada1 up
+ip link set nata0 up
+ip link set nata1 up
 
-# Verify traffic flow by executing a 3-count ping from nada0 to nada1
-echo "Verifying traffic flow (pinging nada1 from nada0)..."
-ping -c 3 -I nada0 10.0.0.2
+# Verify traffic flow by executing a 3-count ping from nata0 to nata1
+echo "Verifying traffic flow (pinging nata1 from nata0)..."
+ping -c 3 -I nata0 10.0.0.2
 
 echo "NATA simulation setup complete."

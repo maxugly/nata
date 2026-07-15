@@ -99,13 +99,13 @@ static int do_status(void)
     printf("==================================================\n");
     if (status.is_sim_mode) {
         printf("Mode:             SOFTWARE SIMULATION LOOPBACK\n");
-        printf("Link Status:      UP (nada0 <-> nada1 bridged)\n");
+        printf("Link Status:      UP (nata0 <-> nata1 bridged)\n");
         printf("Virtual Mailbox:  %s\n", status.bdev_path);
         printf("--------------------------------------------------\n");
-        printf("nada0 Statistics:\n");
+        printf("nata0 Statistics:\n");
         printf("  TX Packets:     %llu\n", (unsigned long long)status.sim_tx_packets_0);
         printf("  RX Packets:     %llu\n", (unsigned long long)status.sim_rx_packets_0);
-        printf("nada1 Statistics:\n");
+        printf("nata1 Statistics:\n");
         printf("  TX Packets:     %llu\n", (unsigned long long)status.sim_tx_packets_1);
         printf("  RX Packets:     %llu\n", (unsigned long long)status.sim_rx_packets_1);
         printf("--------------------------------------------------\n");

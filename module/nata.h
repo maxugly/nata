@@ -45,13 +45,13 @@ struct nata_priv {
     u32 last_rx_seq_0;
     u32 last_rx_seq_1;
 
-    /* Stats for nada0 */
+    /* Stats for nata0 */
     u64 tx_packets_0;
     u64 tx_bytes_0;
     u64 rx_packets_0;
     u64 rx_bytes_0;
 
-    /* Stats for nada1 */
+    /* Stats for nata1 */
     u64 tx_packets_1;
     u64 tx_bytes_1;
     u64 rx_packets_1;

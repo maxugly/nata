@@ -21,12 +21,12 @@ MODULE_PARM_DESC(target_ata_port, "Target ATA port to bind to (-1 for software-d
 
 static struct nata_priv *global_priv;
 
-/* The RX polling/receiver thread for nada0 */
+/* The RX polling/receiver thread for nata0 */
 static int nata_rx_thread_0(void *data)
 {
     struct nata_priv *priv = data;
 
-    pr_info("NATA: RX thread for nada0 started.\n");
+    pr_info("NATA: RX thread for nata0 started.\n");
     while (!kthread_should_stop()) {
         /* Wait until there is a new packet at rx_lba_0 (lower 64KB) or we are stopping */
         wait_event_interruptible(priv->rx_wait_0,
@@ -37,19 +37,19 @@ static int nata_rx_thread_0(void *data)
 
         /* Share priv->lock with TX so mailbox header/payload pairs are atomic */
         spin_lock_bh(&priv->lock);
-        sim_rx_one_packet(priv, 1); /* 1 for dev0 (nada0) */
+        sim_rx_one_packet(priv, 1); /* 1 for dev0 (nata0) */
         spin_unlock_bh(&priv->lock);
     }
-    pr_info("NATA: RX thread for nada0 stopped.\n");
+    pr_info("NATA: RX thread for nata0 stopped.\n");
     return 0;
 }
 
-/* The RX polling/receiver thread for nada1 */
+/* The RX polling/receiver thread for nata1 */
 static int nata_rx_thread_1(void *data)
 {
     struct nata_priv *priv = data;
 
-    pr_info("NATA: RX thread for nada1 started.\n");
+    pr_info("NATA: RX thread for nata1 started.\n");
     while (!kthread_should_stop()) {
         /* Wait until there is a new packet at rx_lba_1 (upper 64KB) or we are stopping */
         wait_event_interruptible(priv->rx_wait_1,
@@ -59,10 +59,10 @@ static int nata_rx_thread_1(void *data)
             break;
 
         spin_lock_bh(&priv->lock);
-        sim_rx_one_packet(priv, 0); /* 0 for dev1 (nada1) */
+        sim_rx_one_packet(priv, 0); /* 0 for dev1 (nata1) */
         spin_unlock_bh(&priv->lock);
     }
-    pr_info("NATA: RX thread for nada1 stopped.\n");
+    pr_info("NATA: RX thread for nata1 stopped.\n");
     return 0;
 }
 
@@ -94,7 +94,7 @@ static long nata_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         status.tx_lba_start = priv->tx_lba_0;
         status.rx_lba_start = priv->rx_lba_0;
         
-        /* Copy interface 0 (nada0) stats as main stats */
+        /* Copy interface 0 (nata0) stats as main stats */
         status.tx_packets = priv->tx_packets_0;
         status.tx_bytes = priv->tx_bytes_0;
         status.rx_packets = priv->rx_packets_0;
@@ -147,8 +147,8 @@ static int __init nata_init(void)
     spin_lock_init(&global_priv->lock);
 
     /* Configure mailbox LBA offsets:
-     * nada0 transmits to upper 64KB (LBA 128), reads from lower 64KB (LBA 0)
-     * nada1 transmits to lower 64KB (LBA 0), reads from upper 64KB (LBA 128)
+     * nata0 transmits to upper 64KB (LBA 128), reads from lower 64KB (LBA 0)
+     * nata1 transmits to lower 64KB (LBA 0), reads from upper 64KB (LBA 128)
      */
     global_priv->tx_lba_0 = 128;
     global_priv->rx_lba_0 = 0;
