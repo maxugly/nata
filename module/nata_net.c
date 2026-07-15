@@ -13,7 +13,7 @@ static netdev_tx_t nada_xmit_0(struct sk_buff *skb, struct net_device *dev)
     int ret;
 
     if (!priv || !priv->sim_mailbox) {
-        dev_kfree_skb(skb);
+        dev_kfree_skb_any(skb);
         return NETDEV_TX_OK;
     }
 
@@ -32,8 +32,9 @@ static netdev_tx_t nada_xmit_0(struct sk_buff *skb, struct net_device *dev)
         dev->stats.tx_errors++;
     }
 
-    dev_kfree_skb(skb);
+    /* Drop the skb outside the lock to shorten hold time */
     spin_unlock_bh(&priv->lock);
+    dev_consume_skb_any(skb);
     return NETDEV_TX_OK;
 }
 
@@ -46,7 +47,7 @@ static netdev_tx_t nada_xmit_1(struct sk_buff *skb, struct net_device *dev)
     int ret;
 
     if (!priv || !priv->sim_mailbox) {
-        dev_kfree_skb(skb);
+        dev_kfree_skb_any(skb);
         return NETDEV_TX_OK;
     }
 
@@ -65,8 +66,9 @@ static netdev_tx_t nada_xmit_1(struct sk_buff *skb, struct net_device *dev)
         dev->stats.tx_errors++;
     }
 
-    dev_kfree_skb(skb);
+    /* Drop the skb outside the lock to shorten hold time */
     spin_unlock_bh(&priv->lock);
+    dev_consume_skb_any(skb);
     return NETDEV_TX_OK;
 }
 
