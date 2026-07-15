@@ -37,7 +37,7 @@ Every meaningful change requires a **DOX pass** before the task is done.
 |-------------|--------|
 | Packet header, magic, len/seq rules | `docs/specs/02-packet-format.md` (+ any code comments that restate them) |
 | Mailbox size, LBA split, dual-port geometry | `03-mailbox-memory-map.md`, `07-fpga-rtl.md`, README mailbox table |
-| TX/RX path, threads, locking, netdev ops | `04-kernel-module.md` |
+| TX/RX path, NAPI, locking, netdev ops | `04-kernel-module.md` |
 | Ioctls, `/dev/nata_ctl`, `natactl` | `05-control-plane.md` |
 | Netns scripts, default IPs, bring-up | `06-simulation-and-netns.md`, README quick start |
 | RTL ports, FSMs, BRAM, constraints | `07-fpga-rtl.md` |

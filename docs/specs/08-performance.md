@@ -1,7 +1,7 @@
 # 08 — Performance Specification (Simulation)
 
-**Spec version:** 0.2 (as-built)  
-**Status:** MEASURED (lab baseline re-run 2026-07-15 after 8-slot ring)  
+**Spec version:** 0.3 (as-built)  
+**Status:** MEASURED (lab baseline re-run 2026-07-15 after NAPI RX)  
 **Mode:** In-kernel mailbox simulation only — **not** SATA PHY throughput  
 
 ---
@@ -9,10 +9,11 @@
 ## 1. Scope
 
 ```text
-netdev TX → spinlock → ring enqueue → wake → kthread drain → netif_rx
+netdev TX → spinlock → ring enqueue → napi_schedule(peer)
+  → softirq NAPI poll → short lock dequeue → napi_gro_receive
 ```
 
-Numbers bound software encapsulation with an **8-slot ring per direction**. They are not SATA line rate.
+Numbers bound software encapsulation with an **8-slot ring per direction** and **per-netdev NAPI**. They are not SATA line rate.
 
 ---
 
@@ -20,10 +21,10 @@ Numbers bound software encapsulation with an **8-slot ring per direction**. They
 
 | Item | Value |
 |------|--------|
-| Date | 2026-07-15 (post ring) |
+| Date | 2026-07-15 (post NAPI) |
 | Kernel | Linux 6.8.0-124-generic |
 | CPU | AMD EPYC-Milan, 8 vCPU |
-| Module | `nata.ko` sim, **8×16-sector rings** |
+| Module | `nata.ko` sim, **8×16-sector rings**, **NAPI RX** |
 | Topology | netns `nata-a` ↔ `nata-b` |
 | Tools | `ping`, `iperf3` 3.16 |
 
@@ -34,9 +35,9 @@ Numbers bound software encapsulation with an **8-slot ring per direction**. They
 | Metric | Value |
 |--------|-------|
 | Loss | **0%** |
-| RTT min / avg / max | **0.043 / 0.083 / 0.161 ms** |
+| RTT min / avg / max | **0.035 / 0.051 / 0.068 ms** |
 
-Single-packet latency remains sub-millisecond (same host path).
+Single-packet latency remains well under a millisecond (same-host path). Slightly better than the kthread path (~0.08 ms avg).
 
 ---
 
@@ -44,17 +45,17 @@ Single-packet latency remains sub-millisecond (same host path).
 
 | Direction | Bitrate | Retransmits (10 s) |
 |-----------|---------|---------------------|
-| A → B | **~3.70 Gbit/s** (sender = receiver) | **~55k** |
-| B → A (`-R`) | **~3.77 Gbit/s** | **~58k** |
+| A → B | **~4.42 Gbit/s** (sender = receiver) | **~57k** |
+| B → A (`-R`) | **~4.79 Gbit/s** | **~53k** |
 
-### Prior single-slot baseline (same host, earlier same day)
+### Evolution on this host (same day)
 
-| Metric | Single-slot | 8-slot ring |
-|--------|-------------|-------------|
-| TCP goodput | ~0.60 Gbit/s | **~3.7 Gbit/s** |
-| TCP retransmits / 10 s | ~164k | **~55–58k** |
+| Metric | Single-slot kthread | 8-slot + kthread | 8-slot + NAPI |
+|--------|---------------------|------------------|---------------|
+| TCP goodput | ~0.60 Gbit/s | ~3.7 Gbit/s | **~4.4–4.8 Gbit/s** |
+| TCP retransmits / 10 s | ~164k | ~55–58k | **~53–57k** |
 
-Retransmits are **not** zero: ring depth 8 still underfills vs TCP burst + kthread/`netif_rx` scheduling. They dropped ~3× while throughput rose ~6×. Full elimination needs deeper rings, NAPI, or TX backpressure (`NETDEV_TX_BUSY`).
+NAPI raised goodput ~20% over the kthread drain by injecting in softirq and releasing the ring lock before stack inject. Retransmits stay in the same order of magnitude: **depth 8 still underfills TCP bursts** under flood. Further cuts need deeper rings and/or `NETDEV_TX_BUSY` backpressure.
 
 ---
 
@@ -62,30 +63,32 @@ Retransmits are **not** zero: ring depth 8 still underfills vs TCP burst + kthre
 
 | Side | Result |
 |------|--------|
-| Sender offered | **~3.67 Gbit/s** |
-| Receiver goodput | **~3.54 Gbit/s** |
-| Loss | **~3.4%** |
+| Sender offered | **~2.49 Gbit/s** |
+| Receiver goodput | **~2.49 Gbit/s** |
+| Loss | **~0.073%** (~1.5k / 2.1M datagrams) |
 
-### Prior single-slot baseline
+### Evolution
 
-| Metric | Single-slot | 8-slot ring |
-|--------|-------------|-------------|
-| UDP goodput | ~2.23 Gbit/s | **~3.54 Gbit/s** |
-| UDP loss (unlimited) | ~45% | **~3.4%** |
+| Metric | Single-slot | 8-slot kthread | 8-slot NAPI |
+|--------|-------------|----------------|-------------|
+| UDP goodput | ~2.23 Gbit/s | ~3.54 Gbit/s | **~2.49 Gbit/s** |
+| UDP loss (unlimited) | ~45% | ~3.4% | **~0.07%** |
 
-Ring-full drops appear under flood (`ring_full_drops` in `natactl status`) instead of silent overwrite.
+NAPI nearly eliminates UDP loss; offered rate under `-b 0` is lower than the kthread run (CPU/scheduling mix), so goodput is not a pure apples-to-apples win. Prefer loss% and TCP goodput as primary trend lines.
+
+After a full bench suite, `natactl status` showed **`ring_full_drops` ~1.1e5** — ring still saturates under flood.
 
 ---
 
 ## 6. Summary table (normative for README)
 
-| Metric | Result (8-slot ring) |
-|--------|----------------------|
-| ICMP RTT avg | **~0.08 ms** |
-| TCP goodput | **~3.7 Gbit/s** either direction |
-| TCP retransmits / 10 s | **~5.5e4** (improved vs ~1.6e5 single-slot; not zero) |
-| UDP goodput | **~3.5 Gbit/s** |
-| UDP loss at unlimited offer | **~3.4%** |
+| Metric | Result (8-slot + NAPI) |
+|--------|------------------------|
+| ICMP RTT avg | **~0.05 ms** |
+| TCP goodput | **~4.4–4.8 Gbit/s** either direction |
+| TCP retransmits / 10 s | **~5.5e4** (similar to kthread ring; not zero) |
+| UDP goodput (`-b 0`) | **~2.5 Gbit/s** |
+| UDP loss at unlimited offer | **~0.07%** |
 
 ---
 
@@ -93,16 +96,18 @@ Ring-full drops appear under flood (`ring_full_drops` in `natactl status`) inste
 
 | Limit | Impact |
 |-------|--------|
-| Ring depth 8 | Finite burst absorption; then `-ENOSPC` drops |
-| `spin_lock_bh` + kthread | Serialization and scheduling lag |
-| No `NETDEV_TX_BUSY` | Stack may keep offering until ring full drops |
-| `netif_rx` | Softnet pressure under flood |
+| Ring depth 8 | Finite burst absorption; then `-ENOSPC` / `ring_full_drops` |
+| Shared `spin_lock` for both directions | TX and RX serialize briefly on enqueue/dequeue |
+| No `NETDEV_TX_BUSY` | Stack may keep offering until ring-full drops |
+| Softirq NAPI budget (default 64) | Poll yields; may reschedule on residual pending |
+
+**Removed vs prior:** dedicated RX kthreads and `netif_rx` under `spin_lock_bh` for the full drain.
 
 ---
 
 ## 8. Re-measurement
 
-Re-run after ring depth, locking, or RX path changes; update if results move **>15%**. Record `natactl status` ring_full_drops after iperf.
+Re-run after ring depth, locking, NAPI weight, or TX path changes; update if results move **>15%**. Record `natactl status` `ring_full_drops` after iperf.
 
 ---
 
@@ -110,3 +115,4 @@ Re-run after ring depth, locking, or RX path changes; update if results move **>
 
 - [03-mailbox-memory-map.md](03-mailbox-memory-map.md)  
 - [02-packet-format.md](02-packet-format.md)  
+- [04-kernel-module.md](04-kernel-module.md)  

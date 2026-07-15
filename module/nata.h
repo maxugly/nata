@@ -5,7 +5,6 @@
 #include <linux/types.h>
 #include <linux/spinlock.h>
 #include <linux/netdevice.h>
-#include <linux/kthread.h>
 #include <linux/skbuff.h>
 #else
 #include <stdint.h>
@@ -51,11 +50,9 @@ struct nata_priv {
 	u64 tx_lba_1; /* 0   (lower 64KB) */
 	u64 rx_lba_1; /* 128 (upper 64KB) */
 
-	/* RX thread management */
-	struct task_struct *rx_thread_0;
-	struct task_struct *rx_thread_1;
-	wait_queue_head_t rx_wait_0;
-	wait_queue_head_t rx_wait_1;
+	/* Per-netdev NAPI (softirq RX drain; replaces kthreads) */
+	struct napi_struct napi0;
+	struct napi_struct napi1;
 
 	/*
 	 * Ring indices (0 .. NATA_RING_SLOTS-1) per direction.
@@ -134,7 +131,11 @@ int nata_net_init(struct nata_priv *priv);
 int sim_mailbox_io(struct nata_priv *priv, u64 sector, void *buf, size_t len, int op);
 int check_rx_pending(struct nata_priv *priv, int is_dev0);
 int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0);
-int sim_rx_one_packet(struct nata_priv *priv, int is_dev0);
+/*
+ * Dequeue one published slot into *skbp (caller injects via NAPI).
+ * Caller must hold priv->lock. Returns 1 + *skbp set, 0 empty, <0 after consume-drop.
+ */
+int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp);
 #endif
 
 #endif /* _NATA_H_ */

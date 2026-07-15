@@ -99,7 +99,7 @@ slot_offset = slot_lba * 512                     // byte offset in sim_mailbox
 
 ### 4.3 Queue depth
 
-**Depth = 8 packets per direction.** Under sustained flood faster than the RX kthread, the ring fills and further TX returns `-ENOSPC` (counted). No silent overwrite of in-flight slots.
+**Depth = 8 packets per direction.** Under sustained flood faster than NAPI drain, the ring fills and further TX returns `-ENOSPC` (counted). No silent overwrite of in-flight slots.
 
 ---
 

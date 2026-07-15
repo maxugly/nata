@@ -1,6 +1,6 @@
 # 01 — System Overview
 
-**Spec version:** 0.1 (as-built)  
+**Spec version:** 0.2 (as-built)  
 **Status:** IMPLEMENTED (simulation); PARTIAL (FPGA/hardware)
 
 ---
@@ -26,7 +26,7 @@ NATA does **not** implement:
 | G2 | L3 usable on same host for development | Separate network namespaces (`nata-a`, `nata-b`) |
 | G3 | Sector-aligned encapsulation | 16-byte NATA header + frame, padded to 512 B sectors |
 | G4 | Safe concurrent mailbox access | Single spinlock + `smp_wmb`/`smp_rmb` publication order |
-| G5 | No busy-spin on bad frames | Invalid slots clear `valid` and advance tail; RX threads sleep on waitqueues |
+| G5 | No busy-spin on bad frames | Invalid slots clear `valid` and advance tail; NAPI poll does not spin on poison |
 | G6 | Dual-host SATA path | **PLANNED** — RTL stubs + whitepaper only |
 
 ---
@@ -72,7 +72,7 @@ NATA does **not** implement:
 - Allocates `sim_mailbox` via `vmalloc(131072)`
 - Both `nata0` and `nata1` register in the **loading** network namespace
 - Packet path never touches AHCI, libata, or real disks
-- Peer wake-up via `wake_up_interruptible` on RX wait queues (software stand-in for SATA Asynchronous Notification)
+- Peer RX via `napi_schedule` on the peer NAPI (software stand-in for SATA Asynchronous Notification)
 
 ### 4.2 Hardware bind mode (PLANNED / API placeholders)
 
@@ -109,7 +109,7 @@ NATA does **not** implement:
    Mailbox sectors      (sim: memcpy; future: SATA FIS + DMA)
 ```
 
-NATA is **not** a TUN/TAP userspace tunnel. Encapsulation runs in the kernel `ndo_start_xmit` path and decapsulation in dedicated kthreads before `netif_rx`.
+NATA is **not** a TUN/TAP userspace tunnel. Encapsulation runs in the kernel `ndo_start_xmit` path and decapsulation in per-netdev NAPI poll (`napi_gro_receive`).
 
 ---
 
@@ -120,14 +120,14 @@ NATA is **not** a TUN/TAP userspace tunnel. Encapsulation runs in the kernel `nd
 | Register `nata0`/`nata1` | Yes | Same module (future bind) |
 | Carrier on at register | Yes | TBD |
 | TX encapsulate + publish | Yes | TBD |
-| RX poll/thread + inject | Yes | TBD (AN-driven) |
+| RX NAPI poll + inject | Yes (`napi_gro_receive`) | TBD (AN → `napi_schedule`) |
 | ARP / ICMP / TCP / UDP | Yes (with netns) | TBD |
 | Sequence numbers | Yes | Same format intended |
 | Multi-packet ring queue | **Yes** (8 slots/dir in sim) | **No** on FPGA yet |
 | Flow control / backpressure | Minimal (always `NETDEV_TX_OK`) | TBD |
 | IDENTIFY DEVICE (ATA) | N/A | Stub in RTL |
 | READ/WRITE DMA EXT | N/A | Stub state machine in RTL |
-| Asynchronous Notification | Software wake_up | Stub `T_SEND_AN` in RTL |
+| Asynchronous Notification | Software `napi_schedule` | Stub `T_SEND_AN` in RTL |
 | Real GTP/GTX SERDES | N/A | Blackbox / forced ready |
 | Dual-host bring-up | N/A | Not demonstrated |
 
@@ -151,7 +151,7 @@ Module and userspace share `module/nata.h` for ioctl layouts; any ABI change to 
 
 1. **Finite ring depth (8)** — under flood, TX drops with `ring_full_drops` instead of overwriting; still not infinite buffering or credit-based flow control.
 2. **Same-host default netns** — assigning both IPs in one namespace fails ARP/IP locality checks; netns isolation is required for end-to-end IP tests.
-3. **TCP retransmits under extreme load** still occur (scheduling / depth), but are much lower than the old single-slot design; see [08-performance.md](08-performance.md).
+3. **TCP retransmits under extreme load** still occur (ring depth 8 underfills bursts); NAPI improved goodput vs kthreads but did not zero retransmits — see [08-performance.md](08-performance.md).
 4. **No MTU customization** — standard Ethernet frame bounds enforced on RX (`ETH_HLEN` … `ETH_FRAME_LEN`); default netdev MTU from `alloc_etherdev`.
 5. **Hardware path is not production-ready** — RTL is architectural scaffolding, not a verified SATA device IP.
 

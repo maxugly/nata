@@ -188,12 +188,12 @@ sudo ip netns exec nata-a iperf3 -c 192.168.42.2 -u -b 0 -t 10
 
 | Metric | Direction | Result |
 |--------|-----------|--------|
-| **ICMP RTT** | `nata-a` → `nata-b` | min **0.043 ms** / avg **0.083 ms** / max **0.161 ms** (50 pkts, 0% loss) |
-| **TCP throughput** | `nata-a` → `nata-b` | **~3.70 Gbit/s** (10 s; ~55k retransmits) |
-| **TCP throughput** | `nata-b` → `nata-a` (iperf3 `-R`) | **~3.77 Gbit/s** (10 s; ~58k retransmits) |
-| **UDP goodput** | `nata-a` → `nata-b` | **~3.54 Gbit/s** receiver (**~3.67 Gbit/s** offered; **~3.4%** loss at unlimited rate) |
+| **ICMP RTT** | `nata-a` → `nata-b` | min **0.035 ms** / avg **0.051 ms** / max **0.068 ms** (50 pkts, 0% loss) |
+| **TCP throughput** | `nata-a` → `nata-b` | **~4.42 Gbit/s** (10 s; ~57k retransmits) |
+| **TCP throughput** | `nata-b` → `nata-a` (iperf3 `-R`) | **~4.79 Gbit/s** (10 s; ~53k retransmits) |
+| **UDP goodput** | `nata-a` → `nata-b` | **~2.49 Gbit/s** receiver (**~0.07%** loss at unlimited `-b 0`) |
 
-Single-slot baseline the same day was ~0.6 Gbit/s TCP and ~45% UDP loss — see [docs/specs/08-performance.md](docs/specs/08-performance.md). Hardware SATA rates will differ again.
+Path is **8-slot rings + per-netdev NAPI** (softirq drain, inject outside the ring lock). Earlier same-day baselines: single-slot kthread ~0.6 Gbit/s TCP / ~45% UDP loss; 8-slot kthread ~3.7 Gbit/s TCP / ~3.4% UDP loss — see [docs/specs/08-performance.md](docs/specs/08-performance.md). Hardware SATA rates will differ again.
 
 ### 5. Unload
 
@@ -250,7 +250,7 @@ When device binding is implemented, the same module will attach to a real target
 NATA is for environments where the only free high-speed interconnect is a SATA port, or where the research goal is storage-bus packet transport. It is complementary to Ethernet, not a general replacement for datacenter NICs.
 
 **What is the effective throughput?**  
-The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS overhead, interrupt/notification path, and CPU cost of encapsulation. In **simulation** (same-host 8-slot mailbox rings), expect roughly **~3.7 Gbit/s TCP** and **~3.5 Gbit/s UDP goodput** with sub-millisecond RTT — see [Benchmark (simulation)](#4-benchmark-simulation). Re-measure with `iperf3` / `ping` on real hardware once the bridge path is live.
+The SATA PHY may run at 3.0 Gbps. Usable bandwidth depends on sector size, FIS overhead, interrupt/notification path, and CPU cost of encapsulation. In **simulation** (same-host 8-slot mailbox rings + NAPI RX), expect roughly **~4.4–4.8 Gbit/s TCP** and sub-millisecond RTT — see [Benchmark (simulation)](#4-benchmark-simulation). Re-measure with `iperf3` / `ping` on real hardware once the bridge path is live.
 
 **Can I boot over NATA?**  
 Not supported. The module assumes a running kernel and registers virtual netdevs; it is not an iSCSI target or PXE path.
@@ -266,7 +266,7 @@ Treat it as experimental. Simulation mode never touches real disks. Hardware mod
 ## Contributing
 
 1. Prefer simulation-mode tests for kernel changes.
-2. Keep hot-path bounds checks and sequence consumption intact (invalid frames must not busy-loop RX threads).
+2. Keep hot-path bounds checks and sequence consumption intact (invalid frames must not busy-loop NAPI).
 3. Do not commit Kbuild products (`*.o`, `*.ko`, `*.cmd`, `Module.symvers`, etc.); see `.gitignore`.
 4. Document hardware or RTL changes alongside software when the mailbox layout or header format shifts.
 5. Follow the agent/human work contract in [AGENTS.md](AGENTS.md) (DOX): as-built specs, named gaps, no oversell.

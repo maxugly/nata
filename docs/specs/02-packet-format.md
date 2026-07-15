@@ -64,7 +64,7 @@ struct nata_pkt_hdr {
 | `len` | `skb->len` | Reject outside `[ETH_HLEN, ETH_FRAME_LEN]` and slot max; consume slot |
 | `seq` | `++tx_seq_*` (telemetry) | Not used for pending detection |
 | `reserved` | 0 | Ignored |
-| payload | `skb->data` | Copied into new skb → `eth_type_trans` / `netif_rx` |
+| payload | `skb->data` | Copied into new skb → `eth_type_trans` / `napi_gro_receive` |
 
 ---
 
@@ -87,11 +87,11 @@ struct nata_pkt_hdr {
 1. If slot[tail].valid != 1 → empty
 2. smp_rmb()
 3. Read header + payload; validate
-4. Inject or count drop
-5. valid = 0; tail = (tail + 1) & 7   // always after observing valid
+4. valid = 0; tail = (tail + 1) & 7   // always after observing valid (before inject)
+5. Caller injects via NAPI (napi_gro_receive) outside the ring lock
 ```
 
-Poison slots always advance tail so RX cannot busy-loop.
+Poison slots always advance tail so NAPI cannot busy-loop.
 
 ---
 

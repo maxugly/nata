@@ -67,7 +67,7 @@ int sim_mailbox_io(struct nata_priv *priv, u64 sector, void *buf, size_t len, in
 /*
  * True if the RX ring for this netdev has at least one published slot.
  * is_dev0: nata0 consumes lower half (nata1 TX ring: head/tail _1).
- * Peek may run without priv->lock (wake decision only).
+ * Peek may run without priv->lock (wake / NAPI reschedule decision only).
  */
 int check_rx_pending(struct nata_priv *priv, int is_dev0)
 {
@@ -153,13 +153,13 @@ int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0)
 }
 
 /*
- * Dequeue one frame from this netdev's RX ring (consumer).
+ * Dequeue one frame from this netdev's RX ring into *skbp.
  * On any drop/invalid, clear valid and advance tail so RX cannot busy-loop.
- * Caller must hold priv->lock.
+ * Caller must hold priv->lock. Does not call into the stack (no inject).
  *
- * Returns: 1 packet injected, 0 empty, <0 error after consume.
+ * Returns: 1 and *skbp set, 0 empty, <0 after consume-drop (no skb).
  */
-int sim_rx_one_packet(struct nata_priv *priv, int is_dev0)
+int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 {
 	struct nata_pkt_hdr hdr;
 	struct sk_buff *skb;
@@ -170,6 +170,8 @@ int sim_rx_one_packet(struct nata_priv *priv, int is_dev0)
 	u64 *rx_bytes;
 	u32 t;
 	u8 *slot;
+
+	*skbp = NULL;
 
 	if (!priv->sim_mailbox)
 		return -ENODEV;
@@ -202,7 +204,7 @@ int sim_rx_one_packet(struct nata_priv *priv, int is_dev0)
 
 	/*
 	 * Consume slot on every path after valid observed so a poison entry
-	 * cannot pin the RX thread.
+	 * cannot pin the NAPI poller.
 	 */
 	if (hdr.magic != NATA_MAGIC ||
 	    hdr.len > ETH_FRAME_LEN || hdr.len < ETH_HLEN ||
@@ -224,21 +226,16 @@ int sim_rx_one_packet(struct nata_priv *priv, int is_dev0)
 
 	memcpy(skb_put(skb, hdr.len), slot + NATA_SLOT_PAYLOAD_OFF, hdr.len);
 
-	skb->dev = netdev;
-	skb->protocol = eth_type_trans(skb, netdev);
-	if (netif_rx(skb) == NET_RX_DROP) {
-		priv->dropped_blocks++;
-		nata_slot_write_valid(slot, 0);
-		*tail = (*tail + 1) & NATA_RING_MASK;
-		return -ENOMEM;
-	}
+	/* Free the slot before inject so the producer can reuse it promptly */
+	nata_slot_write_valid(slot, 0);
+	*tail = (*tail + 1) & NATA_RING_MASK;
 
 	netdev->stats.rx_packets++;
 	netdev->stats.rx_bytes += hdr.len;
 	*rx_packets += 1;
 	*rx_bytes += hdr.len;
 
-	nata_slot_write_valid(slot, 0);
-	*tail = (*tail + 1) & NATA_RING_MASK;
+	skb->dev = netdev;
+	*skbp = skb;
 	return 1;
 }
