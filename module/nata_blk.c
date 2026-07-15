@@ -153,17 +153,14 @@ int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0)
 		return -ENOSPC;
 
 	max_payload = NATA_SLOT_MAX_PAYLOAD;
-	if (skb->len < ETH_HLEN || skb->len > ETH_FRAME_LEN ||
-	    skb->len > max_payload)
+	if (unlikely(skb->len < ETH_HLEN || skb->len > ETH_FRAME_LEN ||
+	    skb->len > max_payload))
 		return -EINVAL;
 
 	hdr.magic = NATA_MAGIC;
 	hdr.len = skb->len;
 	hdr.seq = ++(*tx_seq);
 	hdr.reserved = 0;
-
-	/* Ensure clean valid before filling (stale clear) */
-	nata_slot_write_valid(slot, 0);
 
 	memcpy(slot + NATA_SLOT_PAYLOAD_OFF, skb->data, skb->len);
 	memcpy(slot + NATA_SLOT_HDR_OFF, &hdr, sizeof(hdr));
@@ -228,9 +225,9 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 	 * Consume slot on every path after valid observed so a poison entry
 	 * cannot pin the NAPI poller.
 	 */
-	if (hdr.magic != NATA_MAGIC ||
+	if (unlikely(hdr.magic != NATA_MAGIC ||
 	    hdr.len > ETH_FRAME_LEN || hdr.len < ETH_HLEN ||
-	    hdr.len > NATA_SLOT_MAX_PAYLOAD) {
+	    hdr.len > NATA_SLOT_MAX_PAYLOAD)) {
 		priv->dropped_blocks++;
 		nata_slot_write_valid(slot, 0);
 		*tail = (*tail + 1) & NATA_RING_MASK;

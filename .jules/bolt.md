@@ -1,4 +1,3 @@
-
-## 2024-05-18 - Eliminating kzalloc in Kernel Hotpaths
-**Learning:** Using `kzalloc` inside a highly active network data path (`sim_tx_packet` and `sim_rx_one_packet`) causes significant overhead, introducing unnecessary memory allocation/deallocation latency and fragmentation.
-**Action:** Always attempt to read/write directly to destination buffers or shared memory (e.g., using direct `memcpy` instead of intermediate allocated buffers) when in the hotpath of kernel modules, especially for high-frequency operations like packet processing.
+## 2024-07-15 - Fast-path check for NAPI poll
+**Learning:** `nata_poll` was unnecessarily grabbing a spinlock on an empty ring, consuming cycles during the poll loop.
+**Action:** Adding a lockless peek using `check_rx_pending()` avoids the spinlock overhead entirely for the empty case.
