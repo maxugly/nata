@@ -81,7 +81,7 @@ static long nata_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         struct nata_ioc_status status;
         memset(&status, 0, sizeof(status));
 
-        spin_lock(&priv->lock);
+        spin_lock_bh(&priv->lock);
         status.is_bound = 0;
         status.is_sim_mode = 1;
         strncpy(status.bdev_path, "SIMULATED_MAILBOX_RAM", sizeof(status.bdev_path) - 1);
@@ -102,7 +102,7 @@ static long nata_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         status.sim_rx_packets_0 = priv->rx_packets_0;
         status.sim_tx_packets_1 = priv->tx_packets_1;
         status.sim_rx_packets_1 = priv->rx_packets_1;
-        spin_unlock(&priv->lock);
+        spin_unlock_bh(&priv->lock);
 
         if (copy_to_user((void __user *)arg, &status, sizeof(status)))
             return -EFAULT;
