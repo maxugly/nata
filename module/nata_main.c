@@ -29,6 +29,9 @@ static long nata_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	switch (cmd) {
 	case NATA_IOC_BIND:
 	case NATA_IOC_UNBIND:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
+
 		if (target_ata_port == -1) {
 			pr_info("NATA: Bind/Unbind requested, but Simulation Mode is active.\n");
 			return -EOPNOTSUPP;
