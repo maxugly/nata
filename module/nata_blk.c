@@ -186,6 +186,7 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 	struct nata_pkt_hdr hdr;
 	struct sk_buff *skb;
 	struct net_device *netdev;
+	struct napi_struct *napi;
 	u64 base_lba;
 	u32 *tail;
 	u64 *rx_packets;
@@ -237,7 +238,8 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 		return -EINVAL;
 	}
 
-	skb = dev_alloc_skb(hdr.len + 2);
+	napi = is_dev0 ? &priv->napi0 : &priv->napi1;
+	skb = napi_alloc_skb(napi, hdr.len + 2);
 	if (!skb) {
 		priv->dropped_blocks++;
 		nata_slot_write_valid(slot, 0);
