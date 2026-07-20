@@ -237,7 +237,8 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 		return -EINVAL;
 	}
 
-	skb = dev_alloc_skb(hdr.len + 2);
+	/* Use NAPI allocator for per-CPU cache locality */
+	skb = napi_alloc_skb(is_dev0 ? &priv->napi0 : &priv->napi1, hdr.len + 2);
 	if (!skb) {
 		priv->dropped_blocks++;
 		nata_slot_write_valid(slot, 0);
