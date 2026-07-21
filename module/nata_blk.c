@@ -186,6 +186,7 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 	struct nata_pkt_hdr hdr;
 	struct sk_buff *skb;
 	struct net_device *netdev;
+	struct napi_struct *napi;
 	u64 base_lba;
 	u32 *tail;
 	u64 *rx_packets;
@@ -203,6 +204,7 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 		base_lba = priv->rx_lba_0;
 		tail = &priv->tx_tail_1;
 		netdev = priv->netdev0;
+		napi = &priv->napi0;
 		rx_packets = &priv->rx_packets_0;
 		rx_bytes = &priv->rx_bytes_0;
 	} else {
@@ -210,6 +212,7 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 		base_lba = priv->rx_lba_1;
 		tail = &priv->tx_tail_0;
 		netdev = priv->netdev1;
+		napi = &priv->napi1;
 		rx_packets = &priv->rx_packets_1;
 		rx_bytes = &priv->rx_bytes_1;
 	}
@@ -237,7 +240,8 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 		return -EINVAL;
 	}
 
-	skb = dev_alloc_skb(hdr.len + 2);
+	/* Use NAPI allocator for per-CPU cache performance in polling context */
+	skb = napi_alloc_skb(napi, hdr.len + 2);
 	if (!skb) {
 		priv->dropped_blocks++;
 		nata_slot_write_valid(slot, 0);
