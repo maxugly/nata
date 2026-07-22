@@ -2,3 +2,8 @@
 **Vulnerability:** The NATA virtual network driver's RX handler (`sim_rx_one_packet`) only checked for empty packets (`hdr.len == 0`), allowing packets smaller than an Ethernet header (1-13 bytes) to be passed to `eth_type_trans()`.
 **Learning:** `eth_type_trans()` unconditionally pulls `ETH_HLEN` (14 bytes) from the skb. Passing a smaller packet causes a negative length wrap-around and an out-of-bounds memory read, leading to a direct kernel panic. Additionally, `nata_ioctl` was using `spin_lock` instead of `spin_lock_bh` in process context, introducing a local deadlock risk.
 **Prevention:** Always validate that incoming raw network frames from untrusted sources are at least `ETH_HLEN` bytes before injecting them into the kernel network stack. In kernel drivers, always use `spin_lock_bh` when locking data shared with softirq contexts (like network transmission).
+
+## 2024-07-22 - [Missing Authorization Check in NATA IOCTLs]
+**Vulnerability:** The NATA control device `ioctl` handler (`nata_ioctl`) lacked capability checks for privileged operations `NATA_IOC_BIND` and `NATA_IOC_UNBIND`.
+**Learning:** Any user with read/write access to the `/dev/nata_ctl` control device could send commands to bind or unbind arbitrary backing storage paths to the virtual network interface, which is a privileged network administration operation.
+**Prevention:** Always verify capabilities (e.g. `capable(CAP_NET_ADMIN)`) before executing privileged configurations or destructive actions in device `ioctl` handlers.
