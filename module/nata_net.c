@@ -33,7 +33,7 @@ static int nata_poll(struct napi_struct *napi, int budget)
 		int ret;
 
 		spin_lock(&priv->lock);
-		ret = sim_rx_dequeue(priv, is_dev0, &skb);
+		ret = sim_rx_dequeue(priv, is_dev0, napi, &skb);
 		if (ret != 0)
 			nata_wake_tx_peer(priv, is_dev0);
 		spin_unlock(&priv->lock);
