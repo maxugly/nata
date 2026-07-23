@@ -181,7 +181,7 @@ int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0)
  *
  * Returns: 1 and *skbp set, 0 empty, <0 after consume-drop (no skb).
  */
-int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
+int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct napi_struct *napi, struct sk_buff **skbp)
 {
 	struct nata_pkt_hdr hdr;
 	struct sk_buff *skb;
@@ -237,7 +237,8 @@ int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp)
 		return -EINVAL;
 	}
 
-	skb = dev_alloc_skb(hdr.len + 2);
+	/* Use NAPI per-CPU caches for faster skb allocation */
+	skb = napi_alloc_skb(napi, hdr.len + 2);
 	if (!skb) {
 		priv->dropped_blocks++;
 		nata_slot_write_valid(slot, 0);

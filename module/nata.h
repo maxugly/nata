@@ -143,7 +143,7 @@ int sim_tx_packet(struct nata_priv *priv, struct sk_buff *skb, int is_dev0);
  * Dequeue one published slot into *skbp (caller injects via NAPI).
  * Caller must hold priv->lock. Returns 1 + *skbp set, 0 empty, <0 after consume-drop.
  */
-int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct sk_buff **skbp);
+int sim_rx_dequeue(struct nata_priv *priv, int is_dev0, struct napi_struct *napi, struct sk_buff **skbp);
 #endif
 
 #endif /* _NATA_H_ */
